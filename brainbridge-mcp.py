@@ -49,7 +49,7 @@ bb = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bb)
 
 PROTOCOL = "2025-06-18"
-VERSION = "2.1"
+VERSION = "0.1"   # the spec version: BrainBridge spec v0.1
 CLIENT: str | None = None         # the app that connected, from initialize: TricorderTelemetry's "client"
 BRAIN = {"type": "string", "description": "Whose brain: a handle such as agent.one or agent.two."}
 TOOLS = [
