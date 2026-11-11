@@ -62,7 +62,7 @@ A reader applies amends and drops retired entries before it shows a brain.
 ## 4. Grants
 
 ```json
-{"id": "...", "at": "...", "grantor": "readyroom.compliantclick", "grantee": "ai.assistant",
+{"id": "...", "at": "...", "grantor": "readyroom.example", "grantee": "ai.assistant",
  "scope": "append", "source": "why this was granted"}
 ```
 
