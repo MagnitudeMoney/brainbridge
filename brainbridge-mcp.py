@@ -17,7 +17,7 @@ another access to its own:
     brain_mindmeld        offer, accept, decline or list a MindMeld: both consent, both keep sources
     brain_prime_directive the rules, in full
     brain_feedback        record what failed or worked
-    brain_telemetry       what TricorderTelemetry records; it cannot turn it on
+    brain_telemetry       what TallyTelemetry records; it cannot turn it on
 
 PrimeDirective arrives before any tool: it is the server's `instructions`,
 which an MCP client puts in front of the model on connect.
@@ -50,7 +50,7 @@ _spec.loader.exec_module(bb)
 
 PROTOCOL = "2025-06-18"
 VERSION = "0.1"   # the spec version: BrainBridge spec v0.1
-CLIENT: str | None = None         # the app that connected, from initialize: TricorderTelemetry's "client"
+CLIENT: str | None = None         # the app that connected, from initialize: TallyTelemetry's "client"
 BRAIN = {"type": "string", "description": "Whose brain: a handle such as agent.one or agent.two."}
 TOOLS = [
     {"name": "brain_list", "description": "List the brains you can open, and every grant that involves you.",
@@ -62,7 +62,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "brain": BRAIN, "full": {"type": "boolean", "description": "Every live entry in full. Costs more tokens."},
          "model": {"type": "string", "description": "Your model id, such as claude-opus-5-5. Optional; counted only "
-                   "if a person turned TricorderTelemetry on."}},
+                   "if a person turned TallyTelemetry on."}},
          "required": ["brain"]}},
     {"name": "brain_recall", "description": "Search a brain. Every word of the query must match, in any order.",
      "inputSchema": {"type": "object", "properties": {
@@ -137,7 +137,7 @@ TOOLS = [
          "text": {"type": "string"}, "signal": {"type": "string", "enum": list(bb.SIGNALS)}},
          "required": ["text", "signal"]}},
     {"name": "brain_telemetry",
-     "description": "Show what TricorderTelemetry records and whether it is on. Read only: a person turns it on "
+     "description": "Show what TallyTelemetry records and whether it is on. Read only: a person turns it on "
                     "at a terminal, never an agent.",
      "inputSchema": {"type": "object", "properties": {}}},
 ]
@@ -308,7 +308,7 @@ def selftest() -> int:
                                                                   "kind", "client", "model"})
     ok("a free-text model name is dropped", "model" not in bb.telemetry_event("wake", model="I am an agent, see /Users"))
     r = handle({"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "brain_telemetry", "arguments": {}}})
-    ok("brain_telemetry shows the log", "TricorderTelemetry is ON" in r["result"]["content"][0]["text"])
+    ok("brain_telemetry shows the log", "TallyTelemetry is ON" in r["result"]["content"][0]["text"])
     bb.telemetry_set(False)
     n = len(bb.TELEMETRY_LOG.read_text().splitlines())
     bb.telemetry_event("wake")

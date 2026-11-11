@@ -101,7 +101,7 @@ Every brain keeps these rules, and a session loads them first:
 
 `brainbridge prime-directive` prints the full text.
 
-## 9. TricorderTelemetry
+## 9. TallyTelemetry
 
 Off until a person turns it on (`brainbridge telemetry on` shows what would be shared and asks them to type yes; an agent cannot turn it on). Events only: `saved` (with its kind), `recalled`, `wake`, `mindmeld`, `transport`, `padlock_signed`, plus version, OS family and the self-reported model. Never entry text, titles, handles, names, sources or paths. Each event is written to a local file before it is sent. v0.1 hosts no collector, so nothing leaves the machine.
 
@@ -120,7 +120,11 @@ First public spec, released with brainbridge.sh.
 - PadLock: Ed25519 signing via `ssh-keygen`, canonical form, `brainbridge verify`.
 - TransporterBeam: export to JSONL (lossless), AGENTS.md, GEMINI.md, CLAUDE.md and ChatGPT; import from JSONL.
 - PrimeDirective: the eight rules.
-- TricorderTelemetry: opt-in, events only, no hosted collector.
+- TallyTelemetry: opt-in, events only, no hosted collector.
+
+### v0.1 · 2026-11-11, later the same day
+
+- TricorderTelemetry renamed TallyTelemetry. The behaviour is unchanged.
 
 ### Planned: v0.2
 

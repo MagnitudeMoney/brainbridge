@@ -172,7 +172,7 @@ def prime_directive(rules: tuple[int, ...] | None = None, full: bool = True) -> 
         return "PrimeDirective: " + " ".join(f"{i}. {t}" for i, (t, _) in picked) + \
                " (brainbridge prime-directive for the full text)"
     return "\n".join(f"  {i}. {t}" + (f" {d}" if d else "") for i, (t, d) in picked)
-# TRICORDERTELEMETRY: anonymous, model-identified event counts, so BrainBridge's
+# TALLYTELEMETRY: anonymous, model-identified event counts, so BrainBridge's
 # impact can be seen. PrimeDirective rule 3 decides the shape: OFF until a person turns it on at a
 # terminal (an agent's shell has no TTY, so an agent cannot); events only, never
 # content; each event written to a local file first, so `telemetry show` prints
@@ -199,7 +199,7 @@ def telemetry_set(on: bool) -> str:
     conf["on"] = on
     TELEMETRY_CONF.parent.mkdir(parents=True, exist_ok=True)
     TELEMETRY_CONF.write_text(json.dumps(conf))
-    return f"TricorderTelemetry is {'on' if on else 'off'}"
+    return f"TallyTelemetry is {'on' if on else 'off'}"
 
 
 def telemetry_event(event: str, kind: str | None = None, client: str | None = None,
@@ -270,7 +270,7 @@ def telemetry_show() -> str:
     on = telemetry_conf().get("on")
     where = (f"When on, events are logged in {TELEMETRY_LOG} and then sent, in batches, to {TELEMETRY_URL}"
              if TELEMETRY_URL else f"No collector is set, so nothing is sent: events stay in {TELEMETRY_LOG}")
-    lines = [f"TricorderTelemetry is {'ON' if on else 'off'}. {where}.",
+    lines = [f"TallyTelemetry is {'ON' if on else 'off'}. {where}.",
              "An event carries only: its name, the day, a random install id that changes monthly, the "
              "BrainBridge version, the OS family, an entry's kind, the client app and the model the agent "
              "reports. Never text, titles, handles, sources or paths."]
@@ -3109,7 +3109,7 @@ def main() -> int:
     f.add_argument("--list", action="store_true")
     sub.add_parser("usage", help="which features agents use, counted from the stores")
     sub.add_parser("prime-directive", help="the rules every brain keeps before anything moves between agents")
-    t = sub.add_parser("telemetry", help="TricorderTelemetry: opt-in anonymous event counts. A person turns it on")
+    t = sub.add_parser("telemetry", help="TallyTelemetry: opt-in anonymous event counts. A person turns it on")
     t.add_argument("action", choices=("show", "on", "off", "send"), nargs="?", default="show")
     a = ap.parse_args()
     global ACTING
@@ -3134,7 +3134,7 @@ def main() -> int:
     if a.cmd == "telemetry":
         if a.action == "on":
             if not sys.stdin.isatty():
-                raise BridgeError("TricorderTelemetry turns on only for a person at a terminal, never for an "
+                raise BridgeError("TallyTelemetry turns on only for a person at a terminal, never for an "
                                   "agent. Run `brainbridge telemetry on` yourself")
             print(telemetry_show())
             if input("  Share these anonymous counts? Type yes: ").strip().lower() != "yes":
