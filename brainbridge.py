@@ -188,6 +188,7 @@ TELEMETRY_URL = os.environ.get("BRAINBRIDGE_TELEMETRY_URL", "https://www.magnitu
 if TELEMETRY_URL.strip().lower() in ("", "none", "off"):
     TELEMETRY_URL = ""
 TELEMETRY_BATCH, TELEMETRY_EVERY = 20, 3600     # send when this many wait, or after this many seconds
+TELEMETRY_CHUNK = 100                               # events per request, well under the collector's 200 and 64KB
 TELEMETRY_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,47}")     # client and model names, nothing freer
 
 
@@ -255,19 +256,29 @@ def telemetry_send(force: bool = False) -> str:
         return "nothing waiting"
     if not force and len(pending) < TELEMETRY_BATCH and time.time() - conf.get("sent_at", 0) < TELEMETRY_EVERY:
         return f"{len(pending)} waiting"
-    body = ("[" + ",".join(pending) + "]").encode()
-    req = urllib.request.Request(TELEMETRY_URL, data=body, method="POST", headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=3) as r:
-            reply = json.loads(r.read() or b"{}")
-    except Exception as err:                       # offline, slow or refused: try again next time
-        return f"not sent ({type(err).__name__}); {len(pending)} kept for next time"
-    conf.update(sent=len(log), sent_at=time.time())
-    try:
-        TELEMETRY_CONF.write_text(json.dumps(conf))
-    except OSError:
-        pass
-    return f"sent {reply.get('stored', len(pending))} event(s)"
+    # In chunks the collector accepts (it reads at most 200 a request, 64KB): a
+    # backlog after a long time offline goes out over several requests, and each
+    # chunk that lands is marked sent, so a failure resends only what is left.
+    sent, stored = conf.get("sent", 0), 0
+    for k in range(0, len(pending), TELEMETRY_CHUNK):
+        chunk = pending[k:k + TELEMETRY_CHUNK]
+        body = ("[" + ",".join(chunk) + "]").encode()
+        req = urllib.request.Request(TELEMETRY_URL, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                reply = json.loads(r.read() or b"{}")
+        except Exception as err:                   # offline, slow or refused: try again next time
+            return (f"sent {stored} event(s); " if stored else "") + \
+                f"not sent ({type(err).__name__}); {len(pending) - k} kept for next time"
+        sent += len(chunk)
+        stored += reply.get("stored", len(chunk))
+        conf.update(sent=sent, sent_at=time.time())
+        try:
+            TELEMETRY_CONF.write_text(json.dumps(conf))
+        except OSError:
+            pass
+    return f"sent {stored} event(s)"
 
 
 def telemetry_show() -> str:
