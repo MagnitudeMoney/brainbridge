@@ -285,6 +285,67 @@ def telemetry_show() -> str:
     return "\n".join(lines)
 
 
+# THE REPORT (after opt-in). What opting in to TallyTelemetry gives a person back:
+# their own agents' decision-making as a funnel, read from the local log alone,
+# so nothing new is collected or sent to make it. Eight tiles in two columns,
+# like MagnitudeApp's Path board, read in funnel order (Erik, 2026-11-11: "think
+# customer funnel"). Design: IntentInfra docs/brainbridge-make-it-so-report.md.
+# A tile whose events don't exist yet shows a dash and says so, never a guess.
+REPORT_TILES = (
+    # (verb, qualifier, what counts it)
+    ("I NOTICE", "SESSIONS", lambda e: e["event"] == "wake"),
+    ("I CONSIDER", "LOOKUPS", lambda e: e["event"] == "recalled"),
+    ("I INTEND", "OPEN THREADS", lambda e: e["event"] == "saved" and e.get("kind") == "thread"),
+    ("I DECIDE", "DECISIONS", lambda e: e["event"] == "saved" and e.get("kind") == "decision"),
+    ("I COMMIT", "SIGNED", lambda e: e["event"] == "padlock_signed"),
+    ("I ENGAGE", "STANDING", None),          # needs superseded/retired events, pending privacy review
+    ("I KEEP", "LONG-TERM", lambda e: e["event"] == "saved" and e.get("kind") in LONG_KINDS),
+    ("I SHARE", "MINDMELDS", lambda e: e["event"] in ("mindmeld", "transport")),
+)
+REPORT_HEADING = "Make it so."
+
+
+def telemetry_report(days: int | None = None) -> dict:
+    """The tiles as numbers, from this machine's TallyTelemetry log. Only for a
+    person who opted in: off, it holds nothing and says how to turn it on."""
+    on = bool(telemetry_conf().get("on"))
+    try:
+        events = [json.loads(l) for l in TELEMETRY_LOG.read_text().splitlines() if l.strip()]
+    except (OSError, ValueError):
+        events = []
+    if days:
+        since = (now() - dt.timedelta(days=days)).strftime("%Y-%m-%d")
+        events = [e for e in events if e.get("day", "") >= since]
+    tiles = [{"verb": v, "qualifier": q, "count": (sum(1 for e in events if f(e)) if f else None)}
+             for v, q, f in REPORT_TILES]
+    models: dict[str, int] = {}
+    for e in events:
+        if e.get("model"):
+            models[e["model"]] = models.get(e["model"], 0) + 1
+    return {"on": on, "events": len(events), "days": days, "tiles": tiles,
+            "models": dict(sorted(models.items(), key=lambda kv: -kv[1]))}
+
+
+def telemetry_report_text(days: int | None = None) -> str:
+    r = telemetry_report(days)
+    if not r["on"] and not r["events"]:
+        return (f"{REPORT_HEADING} Your agents' decision-making, after opt-in.\n"
+                "  TallyTelemetry is off, so there is nothing to read yet. A person turns it on at a\n"
+                "  terminal: brainbridge telemetry on. Nothing else changes if you don't.")
+    span = f"the last {days} days" if days else "everything recorded on this machine"
+    out = [f"{REPORT_HEADING} Your agents' decision-making, {span} ({r['events']} events).", ""]
+    tiles = r["tiles"]
+    for left, right in zip(tiles[0::2], tiles[1::2]):
+        cell = lambda t: f"{t['verb']:<11}{('—' if t['count'] is None else str(t['count'])):>6}  {t['qualifier']:<13}"
+        out.append("  " + cell(left) + "  " + cell(right))
+    out.append("")
+    if r["models"]:
+        out.append("  Models: " + ", ".join(f"{m} {n}" for m, n in list(r["models"].items())[:5]))
+    out.append("  — STANDING counts once the events it needs pass privacy review.")
+    out.append("  Read from your own log only; nothing is sent to make this.")
+    return "\n".join(out)
+
+
 LAST_ERROR = Path.home() / ".cache" / "brainbridge" / "last-error.json"
 FEEDBACK_CMD_FILE = Path.home() / ".config" / "brainbridge" / "feedback-cmd"   # a default review date, for these kinds only
 SCOPES = ("read", "append")
@@ -2047,6 +2108,17 @@ def padlock_selftest(ok, raises) -> None:
            raises(lambda: padlock_init("pad.third", push=False), "inside a git repository")
            and not (inside / "pad.third").exists())
     finally:
+        # The report reads the same log: funnel counts, a dash where no event exists yet.
+        for ev, kind in (("wake", None), ("recalled", None), ("saved", "thread"), ("saved", "decision"),
+                         ("saved", "decision"), ("saved", "preference"), ("mindmeld", None)):
+            telemetry_event(ev, kind=kind, client="cli", model="test-model")
+        r = {t["verb"]: t["count"] for t in telemetry_report()["tiles"]}
+        ok("report: the funnel counts its events", r["I NOTICE"] >= 1 and r["I CONSIDER"] >= 1
+           and r["I INTEND"] == 1 and r["I DECIDE"] == 2 and r["I KEEP"] == 3 and r["I SHARE"] == 1)
+        ok("report: a tile with no events yet is a dash, never a guess", r["I ENGAGE"] is None)
+        ok("report: models come from the events", telemetry_report()["models"].get("test-model", 0) >= 7)
+        ok("report: the text says it is read from the local log only",
+           "nothing is sent" in telemetry_report_text())
         KEYS_DIR, TELEMETRY_CONF, TELEMETRY_LOG = saved
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
@@ -3111,6 +3183,9 @@ def main() -> int:
     sub.add_parser("prime-directive", help="the rules every brain keeps before anything moves between agents")
     t = sub.add_parser("telemetry", help="TallyTelemetry: opt-in anonymous event counts. A person turns it on")
     t.add_argument("action", choices=("show", "on", "off", "send"), nargs="?", default="show")
+    rp = sub.add_parser("report", help="after opt-in: your agents' decision-making, read from your own TallyTelemetry log")
+    rp.add_argument("--days", type=int, help="only the last N days")
+    rp.add_argument("--json", action="store_true")
     a = ap.parse_args()
     global ACTING
     ACTING = a.as_ or ACTING
@@ -3130,6 +3205,9 @@ def main() -> int:
         return 0
     if a.cmd == "prime-directive":
         print("  PrimeDirective\n" + prime_directive())
+        return 0
+    if a.cmd == "report":
+        print(json.dumps(telemetry_report(a.days), indent=2) if a.json else telemetry_report_text(a.days))
         return 0
     if a.cmd == "telemetry":
         if a.action == "on":

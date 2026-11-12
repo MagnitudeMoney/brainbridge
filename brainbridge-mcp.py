@@ -140,6 +140,10 @@ TOOLS = [
      "description": "Show what TallyTelemetry records and whether it is on. Read only: a person turns it on "
                     "at a terminal, never an agent.",
      "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "brain_report",
+     "description": "After opt-in: the person's own agents' decision-making as eight funnel tiles, read from "
+                    "this machine's TallyTelemetry log only. Read only; nothing is sent to make it.",
+     "inputSchema": {"type": "object", "properties": {"days": {"type": "integer"}}}},
 ]
 
 
@@ -238,6 +242,8 @@ def call(name: str, args: dict) -> str:
         return f"thank you: feedback [{rec['id'][:6]}] {rec['signal']} recorded; {status}" + (f"; {fwd}" if fwd else "")
     if name == "brain_telemetry":
         return bb.telemetry_show()
+    if name == "brain_report":
+        return bb.telemetry_report_text(args.get("days"))
     raise bb.BridgeError(f"no tool {name!r}")
 
 
@@ -291,9 +297,9 @@ def selftest() -> int:
     ok("the client app is remembered for telemetry", CLIENT == "claude-code")
     ok("a notification gets no reply", handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None)
     names = [t["name"] for t in handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]]
-    ok("twelve tools", names == ["brain_list", "brain_open", "brain_recall", "brain_save", "brain_consolidate",
+    ok("thirteen tools", names == ["brain_list", "brain_open", "brain_recall", "brain_save", "brain_consolidate",
                                    "brain_grant", "brain_revoke", "brain_retire", "brain_mindmeld",
-                                   "brain_prime_directive", "brain_feedback", "brain_telemetry"])
+                                   "brain_prime_directive", "brain_feedback", "brain_telemetry", "brain_report"])
     r = handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                 "params": {"name": "brain_open", "arguments": {"brain": "agent.one"}}})
     ok("an owner can open their own brain", "brainbridge  agent.one" in r["result"]["content"][0]["text"])
