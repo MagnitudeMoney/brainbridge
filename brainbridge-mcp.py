@@ -243,6 +243,7 @@ def call(name: str, args: dict) -> str:
     if name == "brain_telemetry":
         return bb.telemetry_show()
     if name == "brain_report":
+        bb.telemetry_event("report", client=CLIENT)
         return bb.telemetry_report_text(args.get("days"))
     raise bb.BridgeError(f"no tool {name!r}")
 
@@ -289,6 +290,7 @@ def selftest() -> int:
     tmp = Path(tempfile.mkdtemp())
     bb.REPO, bb.WORKTREE = tmp / "store", tmp / "worktree"
     bb.TELEMETRY_CONF, bb.TELEMETRY_LOG = tmp / "telemetry.json", tmp / "telemetry.jsonl"
+    bb.TELEMETRY_URL = ""                        # a selftest never sends anything anywhere
     init = handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                    "params": {"protocolVersion": PROTOCOL, "clientInfo": {"name": "claude-code"}}})
     ok("initialize names the server", init["result"]["serverInfo"]["name"] == "brainbridge")

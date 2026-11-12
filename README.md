@@ -94,7 +94,7 @@ All optional. Each is an environment variable.
 | `BRAINBRIDGE_MEMDIRS` | none | `handle=/path/to/project` pairs: the Claude Code project whose memory folder mirrors that brain |
 | `BRAINBRIDGE_KEYS` | `~/.config/brainbridge/keys` | Where PadLock keys are kept |
 | `BRAINBRIDGE_FEEDBACK_CMD` | none | A command that receives each feedback record as JSON |
-| `BRAINBRIDGE_TELEMETRY_URL` | none | Where opt-in telemetry is sent; unset, nothing leaves the machine |
+| `BRAINBRIDGE_TELEMETRY_URL` | `https://www.magnitude.money/api/brainbridge/tally` | Where opt-in telemetry is sent once a person turns it on; `none` keeps it on this machine. See [docs/brainbridge-tally-privacy.md](docs/brainbridge-tally-privacy.md) |
 
 ## Spec
 

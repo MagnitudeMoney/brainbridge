@@ -176,13 +176,17 @@ def prime_directive(rules: tuple[int, ...] | None = None, full: bool = True) -> 
 # impact can be seen. PrimeDirective rule 3 decides the shape: OFF until a person turns it on at a
 # terminal (an agent's shell has no TTY, so an agent cannot); events only, never
 # content; each event written to a local file first, so `telemetry show` prints
-# exactly what would leave. No collector exists yet, so nothing is sent: until one
-# does, the local log is all of it.
+# exactly what would leave. Once on, events go to the collector below (IP addresses
+# dropped on receipt, kept 13 months, counts published); BRAINBRIDGE_TELEMETRY_URL=none
+# keeps them on this machine. The privacy note: docs/brainbridge-tally-privacy.md.
 TELEMETRY_CONF = Path.home() / ".config" / "brainbridge" / "telemetry.json"
 TELEMETRY_LOG = Path.home() / ".cache" / "brainbridge" / "telemetry.jsonl"
-TELEMETRY_EVENTS = ("saved", "recalled", "wake", "mindmeld", "transport", "padlock_signed")
-# Where events go once on: a collector URL. Empty means nowhere.
-TELEMETRY_URL = os.environ.get("BRAINBRIDGE_TELEMETRY_URL", "")
+TELEMETRY_EVENTS = ("saved", "recalled", "wake", "mindmeld", "transport", "padlock_signed", "report")
+# Where events go once on: Magnitude's collector, unless overridden. "none" (or
+# empty) means nowhere: events stay in the local log.
+TELEMETRY_URL = os.environ.get("BRAINBRIDGE_TELEMETRY_URL", "https://www.magnitude.money/api/brainbridge/tally")
+if TELEMETRY_URL.strip().lower() in ("", "none", "off"):
+    TELEMETRY_URL = ""
 TELEMETRY_BATCH, TELEMETRY_EVERY = 20, 3600     # send when this many wait, or after this many seconds
 TELEMETRY_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,47}")     # client and model names, nothing freer
 
@@ -2127,6 +2131,8 @@ def padlock_selftest(ok, raises) -> None:
 # ── self-test: a real remote, two machines, no network ──────────────────────
 
 def selftest() -> int:
+    global TELEMETRY_URL
+    TELEMETRY_URL = ""                       # a selftest never sends anything anywhere
     import shutil
     import tempfile
     global REPO, WORKTREE, DEFAULT_MEMDIR, ROOT
@@ -3207,6 +3213,7 @@ def main() -> int:
         print("  PrimeDirective\n" + prime_directive())
         return 0
     if a.cmd == "report":
+        telemetry_event("report", client="cli")
         print(json.dumps(telemetry_report(a.days), indent=2) if a.json else telemetry_report_text(a.days))
         return 0
     if a.cmd == "telemetry":
