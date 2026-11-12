@@ -105,6 +105,8 @@ Every brain keeps these rules, and a session loads them first:
 
 Off until a person turns it on (`brainbridge telemetry on` shows what would be shared and asks them to type yes; an agent cannot turn it on). Events only: `saved` (with its kind), `recalled`, `wake`, `mindmeld`, `transport`, `padlock_signed`, plus version, OS family and the self-reported model. Never entry text, titles, handles, names, sources or paths. Each event is written to a local file before it is sent. v0.1 hosts no collector, so nothing leaves the machine.
 
+**The report (after opt-in).** `brainbridge report` (and the read-only MCP tool `brain_report`) gives a person who opted in their own agents' decision-making as eight tiles, read in funnel order: sessions, lookups, open threads, decisions, signed, standing, long-term and shared. It is read from the local event log only, so making it collects and sends nothing. A tile whose events don't exist yet shows a dash. Someone who doesn't opt in loses nothing else.
+
 ## Changelog
 
 Versions follow `MAJOR.MINOR`. While the major version is 0, a minor release may change the format; every change is listed here with its date, and the reference implementation reports the version it writes (`brainbridge-mcp` serverInfo). From 1.0, a change that breaks an existing brain needs a new major version.
@@ -125,6 +127,10 @@ First public spec, released with brainbridge.sh.
 ### v0.1 · 2026-11-11, later the same day
 
 - TricorderTelemetry renamed TallyTelemetry. The behaviour is unchanged.
+
+### v0.1 · 2026-11-11, evening
+
+- The report after opt-in: `brainbridge report` and `brain_report`, read from the local TallyTelemetry log. No new events and nothing new sent.
 
 ### Planned: v0.2
 
