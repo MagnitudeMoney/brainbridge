@@ -9,8 +9,30 @@ How well does BrainBridge remember without a dreamer? We measured it on [LongMem
 
 | run | when | what changed | evidence in top 10 | one search finds it | answered |
 |---|---|---|---|---|---|
+| 3 | Nov 12, 2026, 5:41 pm PST | The agent saves preferences in searchable words; they load every session | 30 preference questions only | — | preferences **96.7%** (was 66.7%) |
 | 2 | Nov 12, 2026, 5:01 pm PST | `recall` ranks partial matches; a name's random id no longer matches | 93.8% | **78.1%** | 76.0% (not rerun: unchanged by this) |
 | 1 | Nov 12, 2026, 4:34 pm PST | Baseline: raw turns, word recall, no dreamer | 93.8% | 18.7% | 76.0% |
+
+### Run 3: the agent saves preferences in plain words
+
+BrainBridge now tells agents, through the MCP server and the AGENTS.md block, to do this: "When the user says what they like or how they want things, save a preference in the words a later search would use: the general kind as well as the specific one."
+
+Preferences are long-term, so they load in every session's index, whatever is searched. `--agent-prefs` simulates an agent that follows the guidance. A model reads each session's user turns and saves the preferences that session states. It works session by session and never across sessions, so nothing is reorganized later. For cost, the calls are batched, one per question, and cached with `--cache`.
+
+On the same 30 preference questions, with the same model and judge:
+
+| | answered correctly |
+|---|---|
+| Before: recall alone (runs 1 and 2) | 20 of 30 (66.7%) |
+| After: preferences saved as the agent works | **29 of 30 (96.7%)** |
+
+- 9 questions went from wrong to right, and none from right to wrong.
+- On average, the agent saved 77 preferences per question.
+- For every question, a preference from the session that holds the answer was among those loaded.
+- Recall's own ranking is unchanged, at 53.3% @10. The gain comes from the wake, not from search.
+- Caveats: 30 questions. The judge is the same model family that wrote the preferences. The other five question types were not rerun with preferences.
+
+Reproduce with `retrieval` and then `qa`, each with `--type single-session-preference --agent-prefs --cache prefs.json`.
 
 ### Run 2: recall ranks partial matches
 
