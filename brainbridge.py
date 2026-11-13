@@ -190,6 +190,11 @@ if TELEMETRY_URL.strip().lower() in ("", "none", "off"):
 TELEMETRY_BATCH, TELEMETRY_EVERY = 20, 3600     # send when this many wait, or after this many seconds
 TELEMETRY_CHUNK = 100                               # events per request, well under the collector's 200 and 64KB
 TELEMETRY_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,47}")     # client and model names, nothing freer
+# WHICH PROMPT A PERSON SAID YES TO (PVC-98 F1). Before the collector, `telemetry on`
+# promised that nothing would be sent. A yes given then is not a yes to sending:
+# events go out only when the stored consent matches this prompt's version, and
+# only events recorded after that yes. Bump it whenever what is sent, or where, changes.
+TELEMETRY_CONSENT = "collector-2026-11"
 
 
 def telemetry_conf() -> dict:
@@ -199,12 +204,28 @@ def telemetry_conf() -> dict:
         return {}
 
 
-def telemetry_set(on: bool) -> str:
+def telemetry_set(on: bool, send: bool = True) -> str:
+    """on=False turns counting off. on=True records the yes a person just typed:
+    with send, to the current collector prompt (TELEMETRY_CONSENT); without it,
+    local only, a choice that persists in every shell, MCP host and cron job
+    (PVC-98 F2). Either way, only events recorded from now on can ever be sent."""
     conf = telemetry_conf()
     conf["on"] = on
+    if on:
+        try:
+            recorded = len(TELEMETRY_LOG.read_text().splitlines())
+        except OSError:
+            recorded = 0
+        conf.update(send=send, sent=recorded)
+        if send:
+            conf["consent"] = TELEMETRY_CONSENT
+        else:
+            conf.pop("consent", None)
     TELEMETRY_CONF.parent.mkdir(parents=True, exist_ok=True)
     TELEMETRY_CONF.write_text(json.dumps(conf))
-    return f"TallyTelemetry is {'on' if on else 'off'}"
+    if not on:
+        return "TallyTelemetry is off"
+    return "TallyTelemetry is on" + ("" if send else ", local only: counted on this machine, never sent")
 
 
 def telemetry_event(event: str, kind: str | None = None, client: str | None = None,
@@ -237,6 +258,32 @@ def telemetry_event(event: str, kind: str | None = None, client: str | None = No
     return rec
 
 
+def telemetry_consent_selftest(ok) -> None:
+    """Called by selftest() with its temporary telemetry files in place."""
+    global TELEMETRY_URL
+    saved_url = TELEMETRY_URL
+    TELEMETRY_URL = "http://127.0.0.1:9/never"        # set, so only consent and mode can stop a send
+    try:
+        TELEMETRY_CONF.write_text(json.dumps({"on": True}))      # a yes from before the collector
+        ok("TallyTelemetry: a yes given before the collector sends nothing (F1)",
+           telemetry_send(force=True).startswith("nothing sent: the yes on record"))
+        with TELEMETRY_LOG.open("a") as f:
+            f.write(json.dumps({"event": "saved"}) + "\n")
+        before = len(TELEMETRY_LOG.read_text().splitlines())
+        telemetry_set(True, send=True)
+        conf = telemetry_conf()
+        ok("TallyTelemetry: a fresh yes records the prompt and sends only what comes after it (F1)",
+           conf["consent"] == TELEMETRY_CONSENT and conf["sent"] == before and conf["send"] is True)
+        telemetry_set(True, send=False)
+        ok("TallyTelemetry: local only is stored, not a shell variable, and sends nothing (F2)",
+           telemetry_conf()["send"] is False and telemetry_send(force=True) == "local only: nothing sent"
+           and "Local only" in telemetry_show())
+        ok("TallyTelemetry: local only drops the collector consent", "consent" not in telemetry_conf())
+    finally:
+        TELEMETRY_URL = saved_url
+        telemetry_set(False)
+
+
 def telemetry_send(force: bool = False) -> str:
     """Send what the local log holds and the collector has not had. Batched, so a
     command is not slowed; a failure keeps the events for next time."""
@@ -245,6 +292,12 @@ def telemetry_send(force: bool = False) -> str:
     conf = telemetry_conf()
     if not conf.get("on"):
         return "off: nothing sent"
+    if conf.get("send") is False:
+        return "local only: nothing sent"
+    if conf.get("consent") != TELEMETRY_CONSENT:
+        return ("nothing sent: the yes on record was given before events could be sent. "
+                "To send, run `brainbridge telemetry on` again; to keep counting here only, "
+                "`brainbridge telemetry local`")
     if not TELEMETRY_URL:
         return "no collector set: nothing sent"
     try:
@@ -282,9 +335,19 @@ def telemetry_send(force: bool = False) -> str:
 
 
 def telemetry_show() -> str:
-    on = telemetry_conf().get("on")
-    where = (f"When on, events are logged in {TELEMETRY_LOG} and then sent, in batches, to {TELEMETRY_URL}"
-             if TELEMETRY_URL else f"No collector is set, so nothing is sent: events stay in {TELEMETRY_LOG}")
+    conf = telemetry_conf()
+    on = conf.get("on")
+    if on and conf.get("send") is False:
+        where = f"Local only: events are logged in {TELEMETRY_LOG} and never sent"
+    elif on and conf.get("consent") != TELEMETRY_CONSENT:
+        where = (f"Events are logged in {TELEMETRY_LOG}. Nothing is sent: your yes was given before "
+                 "events could be sent. Run `brainbridge telemetry on` again to send, or "
+                 "`brainbridge telemetry local` to keep it here")
+    elif TELEMETRY_URL:
+        where = (f"When on, events are logged in {TELEMETRY_LOG} and then sent, in batches, to {TELEMETRY_URL}. "
+                 "`brainbridge telemetry local` keeps them on this machine instead")
+    else:
+        where = f"No collector is set, so nothing is sent: events stay in {TELEMETRY_LOG}"
     lines = [f"TallyTelemetry is {'ON' if on else 'off'}. {where}.",
              "An event carries only: its name, the day, a random install id that changes monthly, the "
              "BrainBridge version, the OS family, an entry's kind, the client app and the model the agent "
@@ -2134,6 +2197,7 @@ def padlock_selftest(ok, raises) -> None:
         ok("report: models come from the events", telemetry_report()["models"].get("test-model", 0) >= 7)
         ok("report: the text says it is read from the local log only",
            "nothing is sent" in telemetry_report_text())
+        telemetry_consent_selftest(ok)                      # PVC-98 F1 and F2
         KEYS_DIR, TELEMETRY_CONF, TELEMETRY_LOG = saved
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
@@ -3199,7 +3263,7 @@ def main() -> int:
     sub.add_parser("usage", help="which features agents use, counted from the stores")
     sub.add_parser("prime-directive", help="the rules every brain keeps before anything moves between agents")
     t = sub.add_parser("telemetry", help="TallyTelemetry: opt-in anonymous event counts. A person turns it on")
-    t.add_argument("action", choices=("show", "on", "off", "send"), nargs="?", default="show")
+    t.add_argument("action", choices=("show", "on", "local", "off", "send"), nargs="?", default="show")
     rp = sub.add_parser("report", help="after opt-in: your agents' decision-making, read from your own TallyTelemetry log")
     rp.add_argument("--days", type=int, help="only the last N days")
     rp.add_argument("--json", action="store_true")
@@ -3228,15 +3292,17 @@ def main() -> int:
         print(json.dumps(telemetry_report(a.days), indent=2) if a.json else telemetry_report_text(a.days))
         return 0
     if a.cmd == "telemetry":
-        if a.action == "on":
+        if a.action in ("on", "local"):
             if not sys.stdin.isatty():
                 raise BridgeError("TallyTelemetry turns on only for a person at a terminal, never for an "
-                                  "agent. Run `brainbridge telemetry on` yourself")
+                                  f"agent. Run `brainbridge telemetry {a.action}` yourself")
             print(telemetry_show())
-            if input("  Share these anonymous counts? Type yes: ").strip().lower() != "yes":
-                print("  left off")
+            ask = ("  Share these anonymous counts with Magnitude's collector? Type yes: " if a.action == "on"
+                   else "  Count these on this machine only, for `brainbridge report`, never sent? Type yes: ")
+            if input(ask).strip().lower() != "yes":
+                print("  left as it was")
                 return 0
-            print(f"  {telemetry_set(True)}")
+            print(f"  {telemetry_set(True, send=a.action == 'on')}")
         elif a.action == "off":
             print(f"  {telemetry_set(False)}")
         elif a.action == "send":
