@@ -112,6 +112,10 @@ All optional. Each is an environment variable.
 | `BRAINBRIDGE_FEEDBACK_CMD` | none | A command that receives each feedback record as JSON |
 | `BRAINBRIDGE_TELEMETRY_URL` | none | Where opt-in telemetry is sent; unset, nothing leaves the machine |
 
+## Roadmap
+
+What's done, with its evidence, and what's next: [docs/brainbridge-roadmap.md](docs/brainbridge-roadmap.md).
+
 ## Spec
 
 The format is specified in [docs/brainbridge-spec-v0.1.md](docs/brainbridge-spec-v0.1.md).
