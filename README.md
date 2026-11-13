@@ -14,18 +14,30 @@ You need:
 - `git`
 - `ssh-keygen` (OpenSSH 8.1 or later), for PadLock signatures
 
-Then:
+Then, in one line:
 
 ```sh
-git clone <this repository> brainbridge
-cd brainbridge
-python3 brainbridge.py install-command     # puts `brainbridge` on your PATH
-python3 brainbridge.py selftest            # optional: runs every check against a temp store
+curl -fsSL https://brainbridge.sh/install | sh
 ```
+
+It checks for python3 and git, clones a tagged release into `~/.brainbridge/code`, refuses if the release's commit isn't the one it names, and runs `brainbridge setup`. No sudo, nothing outside your home folder. To read it first:
+
+```sh
+curl -fsSL https://brainbridge.sh/install -o brainbridge-install && less brainbridge-install && sh brainbridge-install
+```
+
+Or by hand:
+
+```sh
+git clone https://github.com/MagnitudeMoney/brainbridge.git ~/.brainbridge/code
+python3 ~/.brainbridge/code/brainbridge.py setup
+```
+
+`brainbridge setup` checks what you need, asks for your handle and saves it, puts `brainbridge` on your PATH, mints your PadLock key, saves and recalls a first memory, offers to connect the agent apps it finds (Claude Code, Codex, Gemini CLI, Cursor), and asks about TallyTelemetry, which stays off unless you say yes. Run it again any time: each step already done says so. `python3 brainbridge.py selftest` runs every check against a temp store.
 
 ## Quick start
 
-Pick a handle: lowercase words joined by dots, such as `agent.one`.
+If you ran `brainbridge setup`, your handle is saved and you can skip the export below. Otherwise pick one: lowercase words joined by dots, such as `agent.one`.
 
 ```sh
 export BRAINBRIDGE_AS=agent.one
