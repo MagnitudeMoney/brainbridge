@@ -71,7 +71,7 @@ def main() -> None:
     rng = random.Random(11)
     q = QUERIES["a question"]
     print(f"  {'entries':>9}  {'log MB':>7}  {'scan ms':>8}  {'build s':>8}  {'index MB':>8}  "
-          f"{'recall ms':>9}  {'append+recall ms':>16}  same")
+          f"{'recall ms':>9}  {'append+recall ms':>16}  {'wake scan ms':>12}  {'wake ms':>8}  same")
     for n in (int(x) for x in a.sizes.split(",")):
         owner = f"scale.n{n}"
         fill(owner, n, rng)
@@ -88,10 +88,15 @@ def main() -> None:
                 f.write(json.dumps(bb.make_entry(owner, "fact", "partner bank pricing appended", "t", records=[])) + "\n")
             bb.index_recall(owner, owner, q)
         app = ms(append_then_recall, a.repeat)
+        bb._INDEX_OK = False
+        wscan = ms(lambda: bb.brief(owner, owner), a.repeat) if n <= a.scan_max else float("nan")
+        plain = bb.brief(owner, owner) if n <= a.scan_max else None
+        bb._INDEX_OK = None
+        widx = ms(lambda: bb.brief(owner, owner), a.repeat)
         same = None if n > a.scan_max else all(
             [e["id"] for e in bb.recall_scan(owner, owner, x)] == [e["id"] for e in bb.index_recall(owner, owner, x)]
-            for x in QUERIES.values())
-        print(f"  {n:>9}  {mb:>7.1f}  {scan:>8.0f}  {build:>8.1f}  {imb:>8.1f}  {warm:>9.0f}  {app:>16.0f}  "
+            for x in QUERIES.values()) and plain == bb.brief(owner, owner)
+        print(f"  {n:>9}  {mb:>7.1f}  {scan:>8.0f}  {build:>8.1f}  {imb:>8.1f}  {warm:>9.0f}  {app:>16.0f}  {wscan:>12.0f}  {widx:>8.0f}  "
               f"{'not checked' if same is None else 'yes' if same else 'NO'}", flush=True)
         bb.store_file(owner).unlink()
 

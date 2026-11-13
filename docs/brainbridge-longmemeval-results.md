@@ -27,6 +27,19 @@ v0.1.2 answers recall from a SQLite index beside the log. The index uses FTS5 wi
 - Recall now costs about the number of entries it returns, not the size of the brain. These test brains are dense: their common words appear in about a third of all entries, so a real brain with sparser matches is faster.
 - The cost is disk. A trigram index is about four times the log.
 
+## v0.1.3: wake from the index, and a fix
+
+**Wake reads the index.** Session start (`wake`, `open`, the MCP server's `brain_open`) now reads each entry's current state and PadLock mark from the index, instead of reading the whole log and re-checking every signature. The output is byte for byte the same; a self-test compares it with and without the index, including signed and INVALID entries.
+
+| brain | wake before | wake now | recall before | recall now |
+|---|---|---|---|---|
+| 300 signed entries | 1.95 s | 3 ms | 1.92 s | 2 ms |
+| 100,000 unsigned entries | 1.27 s | 1.03 s | 1.37 s | 93 ms |
+
+On a signed brain, the old wake started `ssh-keygen` once for every entry, every session. Unsigned, wake still prints a line for every long-term entry, so it stays near the size of the brain.
+
+**The fix.** In v0.1.2 the index checked only the end of the log for changes. If an entry was edited in place, even to the same length, recall could keep showing a stale "signed" for it. v0.1.3 hashes everything the index has read (SHA-256, about 0.14 s for a 400 MB brain) on every refresh, and rebuilds the index on any difference. A self-test edits an entry in place to prove it's caught. `brainbridge verify` was never affected: it checks every signature from the log.
+
 ## Speed before the index: recall as a brain grows
 
 Measured 2026-11-12 on a MacBook Air (Apple M-series, 16 GB) with `benchmarks/brainbridge-recall-scale.py`. A throwaway brain is filled with N entries of 8 to 30 words each, then `recall()` is timed for three queries: one word, three words and a whole question. The table shows the median.
@@ -46,6 +59,7 @@ Measured 2026-11-12 on a MacBook Air (Apple M-series, 16 GB) with `benchmarks/br
 
 | run | when | what changed | evidence in top 10 | one search finds it | answered |
 |---|---|---|---|---|---|
+| 6 | Nov 13, 2026 | Wake reads the index; the index notices in-place edits (v0.1.3) | 93.8% (unchanged) | 78.1% (unchanged) | unchanged |
 | 5 | Nov 12, 2026 | Recall answers from an index beside the log (v0.1.2) | 93.8% (unchanged) | 78.1% (unchanged) | unchanged |
 | 3 | Nov 12, 2026, 5:41 pm PST | The agent saves preferences in searchable words; they load every session | 30 preference questions only | — | preferences **96.7%** (was 66.7%) |
 | 2 | Nov 12, 2026, 5:01 pm PST | `recall` ranks partial matches; a name's random id no longer matches | 93.8% | **78.1%** | 76.0% (not rerun: unchanged by this) |
