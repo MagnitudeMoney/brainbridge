@@ -5,6 +5,33 @@ How well does BrainBridge remember without a dreamer? We measured it on [LongMem
 - Code: [`benchmarks/brainbridge-longmemeval.py`](../benchmarks/brainbridge-longmemeval.py)
 - Data: LongMemEval-S, `longmemeval_s_cleaned.json` (277 MB, Hugging Face `xiaowu0162/longmemeval-cleaned`). 500 questions, each hidden in about 490 turns of past conversation.
 
+## Runs
+
+| run | when | what changed | evidence in top 10 | one search finds it | answered |
+|---|---|---|---|---|---|
+| 2 | Nov 12, 2026, 5:01 pm PST | `recall` ranks partial matches; a name's random id no longer matches | 93.8% | **78.1%** | 76.0% (not rerun: unchanged by this) |
+| 1 | Nov 12, 2026, 4:34 pm PST | Baseline: raw turns, word recall, no dreamer | 93.8% | 18.7% | 76.0% |
+
+### Run 2: recall ranks partial matches
+
+Until run 2, `recall` returned only entries holding every word of the query, so one search with a whole question rarely found anything. Now entries holding every word come first, as before, followed by the best partial matches: entries holding at least half the words, most words first, at most 20. `--strict` keeps the old behaviour.
+
+Run 2 also fixed a small bug. Recall searched each entry's name, and a name ends in six random hex characters of the entry's id. A query word like "cafe" or "bed" could therefore match by chance. That is why run 1 scored 93.6 instead of 93.8 at @10 once. Two consecutive runs of run 2 gave identical tables.
+
+| question type | n | @1 | @10 | all@10 | one search, run 1 | one search, run 2 |
+|---|---|---|---|---|---|---|
+| single-session-user | 64 | 73.4 | 93.8 | 93.8 | 35.9 | 90.6 |
+| single-session-assistant | 56 | 96.4 | 100.0 | 100.0 | 0.0 | 80.4 |
+| single-session-preference | 30 | 16.7 | 53.3 | 53.3 | 3.3 | 23.3 |
+| multi-session | 121 | 79.3 | 97.5 | 61.2 | 12.4 | 77.7 |
+| knowledge-update | 72 | 94.4 | 100.0 | 95.8 | 51.4 | 98.6 |
+| temporal-reasoning | 127 | 71.7 | 93.7 | 72.4 | 9.4 | 72.4 |
+| **all** | **470** | **76.8** | **93.8** | **78.1** | **18.7** | **78.1** |
+
+The answer score is not rerun, because the benchmark's answers already used the ranking by words matched. Preferences are still the gap, at 53.3% @10. Run 1 follows, as published.
+
+## Run 1 · Nov 12, 2026, 4:34 pm PST
+
 ## Setup, no dreamer
 
 - Each question's chat turns are saved as BrainBridge entries, one per turn, with the role, session and date in the source.
@@ -33,7 +60,7 @@ Does an entry from a session holding the answer appear in the top k?
 - **chance@10**: ten random turns.
 - The 30 abstention questions are left out, because they have no evidence to find.
 - 42 turns were refused by BrainBridge's secret guard, and count as not saved.
-- One of our runs scored 93.6 at @10 instead of 93.8: a single question changed. We haven't found why yet.
+- One of our runs scored 93.6 at @10 instead of 93.8: a single question changed. Found and fixed in run 2.
 
 ## Answers: 50 questions, stratified sample (seed 11)
 

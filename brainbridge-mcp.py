@@ -8,7 +8,7 @@ another access to its own:
 
     brain_list     the brains you can open, and the grants that let you
     brain_open     TELEPORT: load a brain's live entries into this conversation
-    brain_recall   search a brain (every word, any order)
+    brain_recall   search a brain (every word first, then the best partial matches)
     brain_save     write to your own brain, or to one that granted you append
     brain_grant    let another handle read your brain, or also write to it
     brain_revoke   take a grant back
@@ -64,10 +64,11 @@ TOOLS = [
          "model": {"type": "string", "description": "Your model id, such as claude-opus-5-5. Optional; counted only "
                    "if a person turned TallyTelemetry on."}},
          "required": ["brain"]}},
-    {"name": "brain_recall", "description": "Search a brain. Every word of the query must match, in any order.",
+    {"name": "brain_recall", "description": "Search a brain. Entries holding every word of the query come first; then, unless strict, the best partial matches (at least half the words), marked with how many words they matched. Several short queries find more than one long one.",
      "inputSchema": {"type": "object", "properties": {
          "brain": BRAIN, "query": {"type": "string"},
-         "history": {"type": "boolean", "description": "Include superseded entries, to see what was believed before."}},
+         "history": {"type": "boolean", "description": "Include superseded entries, to see what was believed before."},
+         "strict": {"type": "boolean", "description": "Only entries holding every word, as before."}},
          "required": ["brain", "query"]}},
     {"name": "brain_save",
      "description": "Remember something: committed to git, pushed, and mirrored into the owner's memory folder. "
@@ -182,13 +183,15 @@ def call(name: str, args: dict) -> str:
         bb.telemetry_event("wake", client=CLIENT, model=args.get("model"))
         return text
     if name == "brain_recall":
-        hits = bb.recall(bb.check_handle(args["brain"]), who, args.get("query", ""), bool(args.get("history")))
+        hits = bb.recall(bb.check_handle(args["brain"]), who, args.get("query", ""), bool(args.get("history")),
+                         bool(args.get("strict")))
         bb.telemetry_event("recalled", client=CLIENT)
         return "\n".join(f"[{e['id'][:6]}] {e['kind']} ({'faded' if bb.faded(e) else bb.term(e) + '-term'}): "
                          f"{e['text']}\n    source: {e['source']}"
                          + (f" (by @{e['by']})" if e.get("by") else "")
                          + (f" (via {e['via']})" if e.get("via") else "")
                          + f"\n    padlock: {e.get('padlock', 'unsigned')}"
+                         + (f"\n    partial match: {e['matched'][0]} of {e['matched'][1]} words" if e.get("matched") else "")
                          for e in hits) or "no match"
     if name == "brain_save":
         owner = bb.check_handle(args.get("brain") or who)
