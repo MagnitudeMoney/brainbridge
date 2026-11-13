@@ -1758,12 +1758,13 @@ def brief(owner: str, reader: str | None = None, shared_only: bool = False, full
     full=True prints every live entry in full, the way it read before terms."""
     reader = reader or owner
     require(reader, owner, "read")
-    entries = padlock_annotate(owner, visible(live(load(owner)), reader, owner))
+    every = live_entries(owner)
+    entries = visible(every, reader, owner)
     if shared_only:
         entries = [e for e in entries if audience(e) is None]
     if not entries:
         return f"  brainbridge  {owner}: empty"
-    hidden = len(live(load(owner))) - len(entries)
+    hidden = len(every) - len(entries)
     gone = [] if full else [e for e in entries if faded(e)]
     short = [e for e in entries if not full and term(e) == "short" and e not in gone]
     long_ = [e for e in entries if full or term(e) == "long"]
@@ -1877,7 +1878,7 @@ def recall_scan(owner: str, reader: str, query: str, history: bool = False,
 # anywhere inside a word, exactly as recall_scan's `in` does.
 
 INDEX_DIR = Path(os.environ.get("BRAINBRIDGE_INDEX") or Path.home() / ".cache" / "brainbridge" / "index")
-INDEX_VERSION = "1"
+INDEX_VERSION = "3"
 _INDEX_OK: bool | None = None
 
 
@@ -1915,9 +1916,9 @@ def index_refresh(owner: str) -> sqlite3.Connection:
     """The brain's index, brought up to date with the log. Reads only new lines."""
     import hashlib
     f = store_file(owner)
-    data_size = f.stat().st_size if f.exists() else 0
     kf = store_dir() / f"{KEYS_STORE}.jsonl"
-    keys_fp = hashlib.sha1(kf.read_bytes()).hexdigest() if kf.exists() else ""
+    keys_fp = (hashlib.sha1(kf.read_bytes()).hexdigest() if kf.exists() else "") + \
+        ("" if padlock_tool() else ":no-ssh-keygen")     # marks made without the tool are redone with it
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(_index_file(owner), timeout=30)
     con.execute("PRAGMA journal_mode=WAL")
@@ -1931,21 +1932,20 @@ def index_refresh(owner: str) -> sqlite3.Connection:
     """)
     meta = dict(con.execute("SELECT k, v FROM meta"))
     offset = int(meta.get("offset", 0))
-    tail_ok = True
-    if offset:
-        with f.open("rb") as fh:
-            fh.seek(max(0, offset - 256))
-            tail_ok = hashlib.sha1(fh.read(min(256, offset))).hexdigest() == meta.get("tail")
-    if (meta.get("version") != INDEX_VERSION or meta.get("keys") != keys_fp
-            or data_size < offset or not tail_ok):
+    # EVERY BYTE ALREADY READ MUST BE UNCHANGED. A line edited in place, even
+    # to the same length, is exactly what PadLock exists to catch; a cached
+    # "signed" must never outlive it. So the whole read prefix is hashed on
+    # every refresh (SHA-256: about 0.14 s for a 400 MB brain) and any
+    # difference rebuilds the index from the log.
+    data = f.read_bytes() if f.exists() else b""
+    if (meta.get("version") != INDEX_VERSION or meta.get("keys") != keys_fp or len(data) < offset
+            or (offset and hashlib.sha256(data[:offset]).hexdigest() != meta.get("prefix"))):
         con.executescript("DELETE FROM rec; DELETE FROM gone; DELETE FROM pend; DELETE FROM hay; DELETE FROM meta;")
         offset = 0
-    if data_size == offset:
+    if len(data) == offset:
         con.commit()
         return con
-    with f.open("rb") as fh:
-        fh.seek(offset)
-        chunk = fh.read(data_size - offset)
+    chunk = data[offset:]
     end = chunk.rfind(b"\n") + 1               # whole lines only; a half-written last line waits
     if not end:
         con.commit()
@@ -2002,14 +2002,40 @@ def index_refresh(owner: str) -> sqlite3.Connection:
         if is_live:
             con.execute("INSERT INTO hay(rowid, text) VALUES(?, ?)",
                         (n, recall_hay(live_one(r, pend_of(r["id"])[0]))))
-    with f.open("rb") as fh:
-        new_off = offset + end
-        fh.seek(max(0, new_off - 256))
-        tail = hashlib.sha1(fh.read(min(256, new_off))).hexdigest()
+    new_off = offset + end
     con.executemany("INSERT OR REPLACE INTO meta(k, v) VALUES(?, ?)",
-                    [("offset", str(new_off)), ("tail", tail), ("keys", keys_fp), ("version", INDEX_VERSION)])
+                    [("offset", str(new_off)), ("prefix", hashlib.sha256(data[:new_off]).hexdigest()),
+                     ("keys", keys_fp), ("version", INDEX_VERSION)])
     con.commit()
     return con
+
+
+def index_live(owner: str) -> list[dict]:
+    """live(load(owner)), PadLock-marked, from the index: what every session
+    start reads, without parsing the whole brain or re-checking a signature."""
+    con = index_refresh(owner)
+    try:
+        out = []
+        for raw, mark, fields, amark in con.execute(
+                "SELECT r.raw, r.mark, p.fields, p.amark FROM rec r LEFT JOIN pend p ON p.id = r.id "
+                "WHERE r.live = 1 ORDER BY r.n"):
+            e = live_one(json.loads(raw), json.loads(fields) if fields else {})
+            e["padlock"] = amark or mark
+            out.append(e)
+        return out
+    finally:
+        con.close()
+
+
+def live_entries(owner: str) -> list[dict]:
+    """Every live entry with its PadLock mark: from the index when it can,
+    else live(load()) and padlock_annotate, which it must equal exactly."""
+    if index_ready():
+        try:
+            return index_live(owner)
+        except sqlite3.Error:
+            pass
+    return padlock_annotate(owner, live(load(owner)))
 
 
 def index_recall(owner: str, reader: str, query: str, strict: bool = False) -> list[dict]:
@@ -3223,7 +3249,32 @@ def index_selftest(ok) -> None:
         for i in range(6):
             save(o, o, "fact", f"appended later pricing {rng.choice(vocab)}", "test", False)
         ok("index: appends after the index was built are read, and only they", same(o))
+        global _INDEX_OK
+
+        def briefs() -> list[str]:
+            out = []
+            for who in (o, "pad.owner", "test.owner"):
+                if store_file(who).exists():
+                    out += [brief(who, who), brief(who, who, full=True), brief(who, who, shared_only=True)]
+            return out + [brief(o, other)]
+        with_index = briefs()
+        _INDEX_OK = False
+        try:
+            without = briefs()
+        finally:
+            _INDEX_OK = None
+        ok("index: wake reads the same, byte for byte, with and without the index (signed and INVALID entries too)",
+           with_index == without and any("INVALID" in b for b in without))
         f = store_file(o)
+        before = recall_scan(o, o, "")
+        raw = f.read_text()
+        victim = next(e for e in before if e["text"].startswith("appended later pricing"))["text"]
+        swapped = victim[:-1] + ("x" if victim[-1] != "x" else "y")
+        f.write_text(raw.replace(json.dumps(victim)[1:-1], json.dumps(swapped)[1:-1], 1))
+        ok("index: an entry edited in place, to the same length, is noticed (a cached mark never hides tampering)",
+           len(f.read_text()) == len(raw) and same(o)
+           and any(e["text"] == swapped for e in index_recall(o, o, swapped)))
+        f.write_text(raw)
         lines = f.read_text().splitlines(keepends=True)
         f.write_text("".join(lines[:-3]))                      # a rewrite: the tail is gone
         ok("index: a rewritten log is noticed and the index rebuilt", same(o))
