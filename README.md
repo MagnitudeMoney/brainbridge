@@ -92,6 +92,10 @@ The server sends the PrimeDirective and your brain's index as its instructions o
 
 Identity on one machine is declared, not proven: grants stop accidents, not adversaries. PadLock signatures prove who wrote each entry.
 
+## How recall stays fast
+
+Recall answers from an index beside each brain (`~/.cache/brainbridge/index`, or `BRAINBRIDGE_INDEX`): SQLite FTS5 with trigrams, plus each entry's current state and PadLock mark. The log is the only truth. The index is never committed, reads only new lines, rebuilds itself when the log is rewritten, and can be deleted at any time. `BRAINBRIDGE_INDEX=off` turns it off, and recall scans the log as before. At 100,000 entries a recall takes 88 ms instead of 1.3 s ([results](docs/brainbridge-longmemeval-results.md)).
+
 ## Configuration
 
 All optional. Each is an environment variable.

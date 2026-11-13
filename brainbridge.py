@@ -115,6 +115,7 @@ CONFIGURATION (all optional):
   BRAINBRIDGE_REGISTRY    JSON mapping repository names to handles
   BRAINBRIDGE_CODE_ROOT   where main checkouts live, for that mapping (~/Code)
   BRAINBRIDGE_KEYS        PadLock key folder (~/.config/brainbridge/keys)
+  BRAINBRIDGE_INDEX       the recall index folder (~/.cache/brainbridge/index); off: scan instead
   BRAINBRIDGE_GIT_IDENTITY_CMD  a command that prints a git author name for a
                           handle (given as its one argument); unset: git's own
   BRAINBRIDGE_FEEDBACK_CMD, BRAINBRIDGE_TELEMETRY_URL: see above and below
@@ -129,6 +130,7 @@ import json
 import os
 import platform
 import re
+import sqlite3
 import subprocess
 import sys
 import uuid
@@ -556,14 +558,19 @@ def live(records: list[dict]) -> list[dict]:
     for r in records:
         if r["id"] in gone or r.get("retires") or r.get("amends"):
             continue
-        e = {**r, **fields.get(r["id"], {})}
-        e.setdefault("name", default_name(e))
-        e.setdefault("visibility", "shared")
-        if not e.get("title"):
-            e["title"], rest = cut(e["text"], 60)
-            e.setdefault("hook", cut(rest, 110)[0] + ("…" if len(rest) > 110 else ""))
-        out.append(e)
+        out.append(live_one(r, fields.get(r["id"], {})))
     return out
+
+
+def live_one(r: dict, fields: dict) -> dict:
+    """One entry as a reader sees it: its amendments applied, its defaults filled."""
+    e = {**r, **fields}
+    e.setdefault("name", default_name(e))
+    e.setdefault("visibility", "shared")
+    if not e.get("title"):
+        e["title"], rest = cut(e["text"], 60)
+        e.setdefault("hook", cut(rest, 110)[0] + ("…" if len(rest) > 110 else ""))
+    return e
 
 
 def term(e: dict) -> str:
@@ -1804,8 +1811,35 @@ was we were what when where which who whom why will with would you your about al
 PARTIAL_MAX = 20          # partial matches returned after the full ones
 
 
+def recall_words(query: str) -> list[str]:
+    raw = [w.strip(".,;:!?\"'()[]") for w in query.lower().split()]
+    raw = [w for w in raw if w]
+    return list(dict.fromkeys([w for w in raw if w not in RECALL_SKIP] or raw))
+
+
+def recall_hay(e: dict) -> str:
+    """What recall searches in an entry. The name ends in six hex characters of
+    the random id; they are left out, or a word like "cafe" or "bed" matches by
+    chance (the LongMemEval runs varied by it)."""
+    return " ".join([*(str(e.get(k, "")) for k in ("title", "hook", "text", "source", "kind")),
+                     re.sub(r"-[0-9a-f]{6}$", "", str(e.get("name", "")))]).lower()
+
+
 def recall(owner: str, reader: str, query: str, history: bool = False,
            strict: bool = False) -> list[dict]:
+    """recall_scan's answer, from the index when it can (index_recall): the
+    same entries in the same order, in milliseconds instead of a read of the
+    whole brain. History, or a machine whose SQLite has no FTS5, scans."""
+    if not history and index_ready():
+        try:
+            return index_recall(owner, reader, query, strict)
+        except sqlite3.Error:
+            pass                                    # a broken cache never breaks recall
+    return recall_scan(owner, reader, query, history, strict)
+
+
+def recall_scan(owner: str, reader: str, query: str, history: bool = False,
+                strict: bool = False) -> list[dict]:
     """Entries holding every word of the query, in any order, across title, text
     and source, oldest first, as before. Then, unless strict, the best partial
     matches: entries holding at least half the words, most words first, newest
@@ -1817,16 +1851,10 @@ def recall(owner: str, reader: str, query: str, history: bool = False,
     recs = load(owner)
     pool = [r for r in recs if not r.get("amends") and not r.get("retires")] if history else live(recs)
     pool = visible(pool, reader, owner)
-    raw = [w.strip(".,;:!?\"'()[]") for w in query.lower().split()]
-    raw = [w for w in raw if w]
-    words = list(dict.fromkeys([w for w in raw if w not in RECALL_SKIP] or raw))
-    # The name ends in six hex characters of the random id; leave them out, or a
-    # word like "cafe" or "bed" matches by chance (the LongMemEval runs varied by it).
-    hay = lambda e: " ".join([*(str(e.get(k, "")) for k in ("title", "hook", "text", "source", "kind")),
-                              re.sub(r"-[0-9a-f]{6}$", "", str(e.get("name", "")))]).lower()
+    words = recall_words(query)
     full, partial = [], []
     for n, e in enumerate(pool):
-        h = hay(e)
+        h = recall_hay(e)
         k = sum(w in h for w in words)
         if k == len(words):
             full.append(e)
@@ -1836,6 +1864,199 @@ def recall(owner: str, reader: str, query: str, history: bool = False,
     for k, _, e in partial[:PARTIAL_MAX]:
         e["matched"] = [k, len(words)]
     return padlock_annotate(owner, full + [e for _, _, e in partial[:PARTIAL_MAX]])
+
+
+# ── the recall index: a disposable cache beside the log ────────────────────
+# THE LOG IS THE ONLY TRUTH. The index is derived from it, can be deleted at any
+# time, and is rebuilt from it. It lives outside the store (never committed), one
+# SQLite file per brain, keyed on the store file's path. It reads only the lines
+# appended since it last looked; if the file was rewritten (a rebase, a fresh
+# clone) or the published keys changed, it starts again. It holds each record,
+# whether it is still live, its amendments, its PadLock mark (checked once, not
+# on every recall), and an FTS5 trigram table of recall_hay, so a word matches
+# anywhere inside a word, exactly as recall_scan's `in` does.
+
+INDEX_DIR = Path(os.environ.get("BRAINBRIDGE_INDEX") or Path.home() / ".cache" / "brainbridge" / "index")
+INDEX_VERSION = "1"
+_INDEX_OK: bool | None = None
+
+
+def index_ready() -> bool:
+    """SQLite with FTS5's trigram tokenizer (SQLite 3.34+); else recall scans."""
+    global _INDEX_OK
+    if _INDEX_OK is None:
+        try:
+            c = sqlite3.connect(":memory:")
+            c.execute("CREATE VIRTUAL TABLE t USING fts5(x, tokenize='trigram')")
+            c.close()
+            _INDEX_OK = os.environ.get("BRAINBRIDGE_INDEX", "") != "off"
+        except sqlite3.Error:
+            _INDEX_OK = False
+    return _INDEX_OK
+
+
+def _index_file(owner: str) -> Path:
+    import hashlib
+    key = hashlib.sha1(str(store_file(owner).resolve()).encode()).hexdigest()[:12]
+    return INDEX_DIR / f"{check_handle(owner)}-{key}.sqlite"
+
+
+def _index_mark(owner: str, r: dict, keys: dict) -> str:
+    """padlock_marks' verdict for one record."""
+    who = padlock_author(owner, r)
+    mine = keys.get(who or "", [])
+    m = padlock_check(r, who, [k["key"] for k in mine])
+    if m == "unsigned" and mine and r.get("at", "") > mine[0].get("at", ""):
+        m = f"unsigned, after {who} published a key"
+    return m
+
+
+def index_refresh(owner: str) -> sqlite3.Connection:
+    """The brain's index, brought up to date with the log. Reads only new lines."""
+    import hashlib
+    f = store_file(owner)
+    data_size = f.stat().st_size if f.exists() else 0
+    kf = store_dir() / f"{KEYS_STORE}.jsonl"
+    keys_fp = hashlib.sha1(kf.read_bytes()).hexdigest() if kf.exists() else ""
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(_index_file(owner), timeout=30)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS rec(n INTEGER PRIMARY KEY, id TEXT, raw TEXT, mark TEXT, live INTEGER);
+        CREATE INDEX IF NOT EXISTS rec_id ON rec(id);
+        CREATE TABLE IF NOT EXISTS gone(id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS pend(id TEXT PRIMARY KEY, fields TEXT, amark TEXT);
+        CREATE VIRTUAL TABLE IF NOT EXISTS hay USING fts5(text, tokenize='trigram');
+    """)
+    meta = dict(con.execute("SELECT k, v FROM meta"))
+    offset = int(meta.get("offset", 0))
+    tail_ok = True
+    if offset:
+        with f.open("rb") as fh:
+            fh.seek(max(0, offset - 256))
+            tail_ok = hashlib.sha1(fh.read(min(256, offset))).hexdigest() == meta.get("tail")
+    if (meta.get("version") != INDEX_VERSION or meta.get("keys") != keys_fp
+            or data_size < offset or not tail_ok):
+        con.executescript("DELETE FROM rec; DELETE FROM gone; DELETE FROM pend; DELETE FROM hay; DELETE FROM meta;")
+        offset = 0
+    if data_size == offset:
+        con.commit()
+        return con
+    with f.open("rb") as fh:
+        fh.seek(offset)
+        chunk = fh.read(data_size - offset)
+    end = chunk.rfind(b"\n") + 1               # whole lines only; a half-written last line waits
+    if not end:
+        con.commit()
+        return con
+    keys = padlock_keys()
+    n0 = con.execute("SELECT COALESCE(MAX(n), -1) FROM rec").fetchone()[0]
+    pend_cache: dict[str, tuple[dict, str | None]] = {}
+
+    def pend_of(i: str) -> tuple[dict, str | None]:
+        if i not in pend_cache:
+            row = con.execute("SELECT fields, amark FROM pend WHERE id=?", (i,)).fetchone()
+            pend_cache[i] = (json.loads(row[0]), row[1]) if row else ({}, None)
+        return pend_cache[i]
+
+    def reindex(i: str) -> None:
+        fields, _ = pend_of(i)
+        for n, raw in con.execute("SELECT n, raw FROM rec WHERE id=? AND live=1", (i,)).fetchall():
+            con.execute("DELETE FROM hay WHERE rowid=?", (n,))
+            con.execute("INSERT INTO hay(rowid, text) VALUES(?, ?)",
+                        (n, recall_hay(live_one(json.loads(raw), fields))))
+
+    def drop(i: str) -> None:
+        con.execute("INSERT OR IGNORE INTO gone(id) VALUES(?)", (i,))
+        for (n,) in con.execute("SELECT n FROM rec WHERE id=? AND live=1", (i,)).fetchall():
+            con.execute("DELETE FROM hay WHERE rowid=?", (n,))
+        con.execute("UPDATE rec SET live=0 WHERE id=?", (i,))
+
+    n = n0
+    for line in chunk[:end].decode("utf-8").splitlines():
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        mark = _index_mark(owner, r, keys)
+        if r.get("amends"):
+            t = r["amends"]
+            fields, amark = pend_of(t)
+            fields = {**fields, **r.get("fields", {})}
+            if mark.startswith("INVALID"):
+                amark = f"INVALID: amendment [{r['id'][:6]}] {mark[9:]}"
+            pend_cache[t] = (fields, amark)
+            con.execute("INSERT OR REPLACE INTO pend(id, fields, amark) VALUES(?, ?, ?)",
+                        (t, json.dumps(fields), amark))
+            reindex(t)
+            continue
+        if r.get("retires"):
+            drop(r["retires"])
+            continue
+        if r.get("supersedes"):
+            drop(r["supersedes"])
+        n += 1
+        is_live = con.execute("SELECT 1 FROM gone WHERE id=?", (r["id"],)).fetchone() is None
+        con.execute("INSERT INTO rec(n, id, raw, mark, live) VALUES(?, ?, ?, ?, ?)",
+                    (n, r["id"], line, mark, int(is_live)))
+        if is_live:
+            con.execute("INSERT INTO hay(rowid, text) VALUES(?, ?)",
+                        (n, recall_hay(live_one(r, pend_of(r["id"])[0]))))
+    with f.open("rb") as fh:
+        new_off = offset + end
+        fh.seek(max(0, new_off - 256))
+        tail = hashlib.sha1(fh.read(min(256, new_off))).hexdigest()
+    con.executemany("INSERT OR REPLACE INTO meta(k, v) VALUES(?, ?)",
+                    [("offset", str(new_off)), ("tail", tail), ("keys", keys_fp), ("version", INDEX_VERSION)])
+    con.commit()
+    return con
+
+
+def index_recall(owner: str, reader: str, query: str, strict: bool = False) -> list[dict]:
+    """recall_scan's answer from the index: same entries, same order, same marks."""
+    require(reader, owner, "read")
+    con = index_refresh(owner)
+    try:
+        words = recall_words(query)
+
+        def entry(n: int) -> dict:
+            raw, mark, i = con.execute("SELECT raw, mark, id FROM rec WHERE n=?", (n,)).fetchone()
+            prow = con.execute("SELECT fields, amark FROM pend WHERE id=?", (i,)).fetchone()
+            e = live_one(json.loads(raw), json.loads(prow[0]) if prow else {})
+            e["padlock"] = prow[1] if prow and prow[1] else mark
+            return e
+
+        if not words:
+            ns = [n for (n,) in con.execute("SELECT n FROM rec WHERE live=1 ORDER BY n")]
+            return visible([entry(n) for n in ns], reader, owner)
+        hits: dict[int, int] = {}
+        for w in words:
+            if len(w) >= 3:
+                rows = con.execute("SELECT rowid FROM hay WHERE hay MATCH ?", ('"' + w.replace('"', '""') + '"',))
+            else:
+                esc = w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                rows = con.execute("SELECT rowid FROM hay WHERE text LIKE ? ESCAPE '\\'", (f"%{esc}%",))
+            for (n,) in rows:
+                hits[n] = hits.get(n, 0) + 1
+        need = len(words)
+        gs = grants() if reader not in (owner, ROOT) else []
+        full = [entry(n) for n in sorted(n for n, k in hits.items() if k == need)]
+        full = visible(full, reader, owner, gs)
+        out = list(full)
+        if not strict and need > 1:
+            ranked = sorted(((k, n) for n, k in hits.items() if k < need and k * 2 >= need), key=lambda t: (-t[0], -t[1]))
+            shown = 0
+            for k, n in ranked:
+                if shown == PARTIAL_MAX:
+                    break
+                e = entry(n)
+                if visible([e], reader, owner, gs):
+                    e["matched"] = [k, need]
+                    out.append(e)
+                    shown += 1
+        return out
+    finally:
+        con.close()
 
 
 def doctor(owner: str, memdir: Path | None) -> list[str]:
@@ -2200,8 +2421,9 @@ def padlock_selftest(ok, raises) -> None:
 def selftest() -> int:
     import shutil
     import tempfile
-    global REPO, WORKTREE, DEFAULT_MEMDIR, ROOT
+    global REPO, WORKTREE, DEFAULT_MEMDIR, ROOT, INDEX_DIR
     saved = (REPO, WORKTREE, DEFAULT_MEMDIR)
+    saved_index, INDEX_DIR = INDEX_DIR, Path(tempfile.mkdtemp()) / "index"   # never the real cache
     saved_root, ROOT = ROOT, "root.person"          # the super-reader rows run with one configured
     fails, checks = 0, []
 
@@ -2550,6 +2772,7 @@ def selftest() -> int:
         selftest_meld_beam(ok, raises, t)                   # MindMeld and TransporterBeam
         recall_selftest(ok)                                 # recall ranks partial matches
         setup_selftest(ok)                                  # brainbridge setup
+        index_selftest(ok)                                  # the recall index matches the scan
         # A deleted data worktree is rebuilt, and reads are current again.
         import shutil as _sh
         _sh.rmtree(WORKTREE)
@@ -2574,6 +2797,7 @@ def selftest() -> int:
     finally:
         REPO, WORKTREE, DEFAULT_MEMDIR = saved
         ROOT = saved_root
+        INDEX_DIR = saved_index
         shutil.rmtree(t, ignore_errors=True)
     for name, good in checks:
         fails += not good
@@ -2946,6 +3170,65 @@ def setup(handle: str | None = None, yes: bool = False, interactive: bool | None
         "   brainbridge recall decided\n"
         "   brainbridge wake")
     return 0
+
+
+def index_selftest(ok) -> None:
+    """Called by selftest() with its temporary store in place: the index must
+    give recall_scan's answer exactly, through every kind of record, after
+    appends to a built index, and after the log is rewritten."""
+    global INDEX_DIR
+    import random
+    import tempfile
+    if not index_ready():
+        ok("index: SQLite FTS5 trigram is missing here, so recall scans (nothing to compare)", True)
+        return
+    saved_dir = INDEX_DIR
+    INDEX_DIR = Path(tempfile.mkdtemp())
+    rng = random.Random(7)
+    o, other = "idx.owner", "idx.reader"
+    vocab = "bank pricing review partner coffee rent yoga deck launch spec ok go be at caf".split()
+    queries = ["", "bank", "go", "pricing review", "partner bank pricing", "be at", "rent yoga deck launch",
+               "what about the coffee", "caf", "zzz nothing", "Bank, pricing!"]
+
+    def same(reader: str) -> bool:
+        key = lambda r: [(e["id"], e.get("matched"), e.get("padlock")) for e in r]
+        return all(key(recall_scan(o, reader, q, strict=st)) == key(index_recall(o, reader, q, strict=st))
+                   for q in queries for st in (False, True))
+
+    try:
+        ids = []
+        for i in range(40):
+            text = " ".join(rng.choice(vocab) for _ in range(rng.randint(2, 7)))
+            kw = {"private": True} if i % 9 == 0 else {}
+            if ids and i % 7 == 0:
+                kw["supersedes"] = ids[rng.randrange(len(ids))][:8]
+            try:
+                e, _ = save(o, o, rng.choice(("fact", "decision", "lesson")), text, f"test {i}", False, **kw)
+                ids.append(e["id"])
+            except BridgeError:
+                continue
+            if i % 11 == 5:
+                retire(o, o, ids[rng.randrange(len(ids) - 1)][:8], "test", False)
+            if i % 6 == 3:
+                with contextlib.suppress(BridgeError):
+                    amend(o, o, ids[rng.randrange(len(ids))][:8], {"text": "amended pricing " + rng.choice(vocab)}, False)
+        grant(o, other, "read", None, "test", False, kinds=["fact", "decision"])
+        recs = load(o)
+        ok("index: the test brain really holds supersedes, retires, amendments and private entries",
+           all(sum(1 for r in recs if r.get(k)) >= 2 for k in ("supersedes", "retires", "amends"))
+           and any(r.get("visibility") == "private" for r in recs))
+        ok("index: the same answer as the scan, for the owner, through supersedes, retires and amendments",
+           same(o))
+        ok("index: the same answer for a reader whose grant narrows what they see", same(other))
+        for i in range(6):
+            save(o, o, "fact", f"appended later pricing {rng.choice(vocab)}", "test", False)
+        ok("index: appends after the index was built are read, and only they", same(o))
+        f = store_file(o)
+        lines = f.read_text().splitlines(keepends=True)
+        f.write_text("".join(lines[:-3]))                      # a rewrite: the tail is gone
+        ok("index: a rewritten log is noticed and the index rebuilt", same(o))
+    finally:
+        INDEX_DIR = saved_dir
 
 
 def setup_selftest(ok) -> None:
