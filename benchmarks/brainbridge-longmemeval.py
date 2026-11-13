@@ -161,6 +161,60 @@ def retrieve(owner: str, question: str) -> list[dict]:
     return [by_id[i] for i in sorted(score, key=lambda i: (-score[i], -order.get(i, 0)))]
 
 
+def stream(path: Path):
+    """The questions of a top-level JSON array, one at a time. LongMemEval-M is
+    2.7 GB; loading it whole needs well over 10 GB of memory, one question at a
+    time needs a few MB. Standard library only."""
+    dec = json.JSONDecoder()
+    buf, pos, started = "", 0, False
+    with path.open(encoding="utf-8") as f:
+        while True:
+            while True:                                   # skip whitespace, '[' and ','
+                while pos < len(buf) and buf[pos] in " \t\r\n,":
+                    pos += 1
+                if not started and pos < len(buf) and buf[pos] == "[":
+                    started, pos = True, pos + 1
+                    continue
+                break
+            if pos < len(buf) and buf[pos] == "]":
+                return
+            try:
+                obj, end = dec.raw_decode(buf, pos)
+            except json.JSONDecodeError:
+                chunk = f.read(8 << 20)
+                if not chunk:
+                    if buf[pos:].strip(" \t\r\n]"):
+                        raise
+                    return
+                buf, pos = buf[pos:] + chunk, 0
+                continue
+            yield obj
+            buf, pos = buf[end:], 0
+
+
+class Questions:
+    """The chosen questions, streamed from the file again when iterated: a list's
+    len() and for-loop without holding them all in memory."""
+    def __init__(self, path: Path, ids: list[str]):
+        self.path, self.ids = path, set(ids)
+        self.n = len(ids)
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __iter__(self):
+        for q in stream(self.path):
+            if q["question_id"] in self.ids:
+                yield q
+
+
+def choose(path: Path, n: int | None, qtype: str | None) -> Questions:
+    """The same stratified sample as sample(), decided from ids and types alone."""
+    heads = [{"question_id": q["question_id"], "question_type": q["question_type"]} for q in stream(path)
+             if not qtype or q["question_type"] == qtype]
+    return Questions(path, [q["question_id"] for q in sample(heads, n)])
+
+
 def sample(data: list[dict], n: int | None, seed: int = 11) -> list[dict]:
     """Stratified by question type, in proportion, with a fixed seed."""
     if not n or n >= len(data):
@@ -295,8 +349,7 @@ def main() -> None:
     a = p.parse_args()
     global AGENT_PREFS, CACHE, MODEL
     AGENT_PREFS, CACHE, MODEL = a.agent_prefs, a.cache, a.model
-    data = json.loads(a.data.read_text())
-    data = sample([q for q in data if not a.type or q["question_type"] == a.type], a.sample)
+    data = choose(a.data, a.sample, a.type)
     if a.stage == "retrieval":
         cmd_retrieval(data, a.out)
     else:
