@@ -163,10 +163,11 @@ def instructions(who: str | None) -> str:
 
 
 def me() -> str:
-    who = os.environ.get("BRAINBRIDGE_AS", "")
+    who = os.environ.get("BRAINBRIDGE_AS", "").strip() or bb.configured_handle() or ""
     if not who:
-        raise bb.BridgeError("this server does not know who you are: set BRAINBRIDGE_AS=<your.handle> "
-                             "in its environment (claude mcp add brainbridge -e BRAINBRIDGE_AS=...)")
+        raise bb.BridgeError("this server does not know who you are: run `brainbridge setup`, or set "
+                             "BRAINBRIDGE_AS=<your.handle> in its environment "
+                             "(claude mcp add brainbridge -e BRAINBRIDGE_AS=...)")
     return bb.check_handle(who)
 
 

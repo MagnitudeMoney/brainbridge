@@ -1,0 +1,6 @@
+benchmarks/
+docs/
+tests/
+.github/
+*.md
+!README.md

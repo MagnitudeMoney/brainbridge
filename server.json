@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.MagnitudeMoney/brainbridge",
+  "title": "BrainBridge",
+  "description": "Memory any agent can keep and share: sourced, dated, signed entries in plain files.",
+  "repository": {
+    "url": "https://github.com/MagnitudeMoney/brainbridge",
+    "source": "github"
+  },
+  "websiteUrl": "https://brainbridge.sh",
+  "version": "0.1.4",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/MagnitudeMoney/brainbridge/releases/download/v0.1.4/brainbridge.mcpb",
+      "fileSha256": "FILLED-IN-AT-RELEASE",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
