@@ -55,6 +55,7 @@ TMP = Path(tempfile.mkdtemp(prefix="bb-lme-"))
 os.environ["BRAINBRIDGE_WORKTREE"] = str(TMP / "wt")
 os.environ["BRAINBRIDGE_STORE_REPO"] = str(TMP / "repo")
 os.environ["BRAINBRIDGE_KEYS"] = str(TMP / "keys")
+os.environ["BRAINBRIDGE_INDEX"] = str(TMP / "index")     # the recall index, thrown away with the rest
 (TMP / "wt" / "docs" / "brainbridge").mkdir(parents=True)
 
 spec = importlib.util.spec_from_file_location("brainbridge", HERE / "brainbridge.py")

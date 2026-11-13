@@ -5,7 +5,29 @@ How well does BrainBridge remember without a dreamer? We measured it on [LongMem
 - Code: [`benchmarks/brainbridge-longmemeval.py`](../benchmarks/brainbridge-longmemeval.py)
 - Data: LongMemEval-S, `longmemeval_s_cleaned.json` (277 MB, Hugging Face `xiaowu0162/longmemeval-cleaned`). 500 questions, each hidden in about 490 turns of past conversation.
 
-## Speed: recall as a brain grows
+## Run 5: an index, same answers, faster
+
+v0.1.2 answers recall from a SQLite index beside the log. The index uses FTS5 with trigrams, so a word matches inside other words exactly as before. It also holds each entry's current state and its PadLock mark, checked once. It reads only the lines added since last time, and rebuilds itself if the log is rewritten or the keys change. The log stays the only truth: delete the index and it comes back. Recall with `--history`, and any machine without FTS5, still scans.
+
+**The same answers.**
+- Retrieval on all 470 answerable LongMemEval-S questions gives run 2's table exactly.
+- 640 queries on 40 LongMemEval brains: 0 differences between the index and the scan.
+- Five self-test rows cover supersedes, retires, amendments, private entries, a scoped grant, appends after the build and a rewritten log.
+
+**Faster**, with the same `brainbridge-recall-scale.py` on the same MacBook Air:
+
+| entries | log | scan | index build (once) | index on disk | recall | append + recall | same as scan |
+|---|---|---|---|---|---|---|---|
+| 1,000 | 0.4 MB | 13 ms | 0.0 s | 1.8 MB | 2 ms | 3 ms | yes |
+| 10,000 | 3.9 MB | 130 ms | 0.3 s | 19 MB | 9 ms | 9 ms | yes |
+| 100,000 | 40 MB | 1.33 s | 4.2 s | 173 MB | 88 ms | 61 ms | yes |
+| 1,000,000 | 397 MB | 16.7 s | 65 s | 1.7 GB | 1.09 s | 0.6 s | not checked |
+
+- Peak memory at a million entries fell from 5.8 GB to 1.8 GB.
+- Recall now costs about the number of entries it returns, not the size of the brain. These test brains are dense: their common words appear in about a third of all entries, so a real brain with sparser matches is faster.
+- The cost is disk. A trigram index is about four times the log.
+
+## Speed before the index: recall as a brain grows
 
 Measured 2026-11-12 on a MacBook Air (Apple M-series, 16 GB) with `benchmarks/brainbridge-recall-scale.py`. A throwaway brain is filled with N entries of 8 to 30 words each, then `recall()` is timed for three queries: one word, three words and a whole question. The table shows the median.
 
@@ -18,12 +40,13 @@ Measured 2026-11-12 on a MacBook Air (Apple M-series, 16 GB) with `benchmarks/br
 
 - Time grows in a straight line with the number of entries, and hardly at all with the length of the query.
 - Recall reads and parses the whole brain on every call. That's fine to tens of thousands of entries. At a million it's too slow, and it needs nearly 6 GB of memory.
-- The answer is an index, so that a search reads only the entries that can match. That's next.
+- The answer is an index, so that a search reads only the entries that can match. Run 5 adds it.
 
 ## Runs
 
 | run | when | what changed | evidence in top 10 | one search finds it | answered |
 |---|---|---|---|---|---|
+| 5 | Nov 12, 2026 | Recall answers from an index beside the log (v0.1.2) | 93.8% (unchanged) | 78.1% (unchanged) | unchanged |
 | 3 | Nov 12, 2026, 5:41 pm PST | The agent saves preferences in searchable words; they load every session | 30 preference questions only | — | preferences **96.7%** (was 66.7%) |
 | 2 | Nov 12, 2026, 5:01 pm PST | `recall` ranks partial matches; a name's random id no longer matches | 93.8% | **78.1%** | 76.0% (not rerun: unchanged by this) |
 | 1 | Nov 12, 2026, 4:34 pm PST | Baseline: raw turns, word recall, no dreamer | 93.8% | 18.7% | 76.0% |

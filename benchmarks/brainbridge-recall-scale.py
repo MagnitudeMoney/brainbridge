@@ -5,7 +5,13 @@ Fills a throwaway brain with N entries of realistic text and times recall()
 at each size: a one-word query, a three-word query, and a whole question. No
 model, no network, no real brain touched.
 
-  benchmarks/brainbridge-recall-scale.py [--sizes 1000,10000,100000] [--repeat 5]
+  benchmarks/brainbridge-recall-scale.py [--sizes 1000,10000,100000] [--repeat 5] [--scan-max 100000]
+
+Since run 5 recall answers from an index beside the log (index_recall), so
+this times both: the scan that reads the whole brain (recall_scan), and the
+index: its one-time build, a recall once it is built, and the cost of
+picking up one appended entry. The index is checked against the scan on
+every query it times.
 """
 from __future__ import annotations
 
@@ -24,6 +30,7 @@ os.environ["BRAINBRIDGE_WORKTREE"] = str(TMP / "wt")
 os.environ["BRAINBRIDGE_STORE_REPO"] = str(TMP / "repo")
 os.environ["BRAINBRIDGE_KEYS"] = str(TMP / "keys")
 (TMP / "wt" / "docs" / "brainbridge").mkdir(parents=True)
+os.environ["BRAINBRIDGE_INDEX"] = str(TMP / "index")
 spec = importlib.util.spec_from_file_location("brainbridge", Path(__file__).resolve().parent.parent / "brainbridge.py")
 bb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bb)
@@ -46,26 +53,46 @@ def fill(owner: str, n: int, rng: random.Random) -> None:
     bb.store_file(owner).write_text("\n".join(rows) + "\n")
 
 
+def ms(fn, repeat: int) -> float:
+    times = []
+    for _ in range(repeat):
+        t = time.perf_counter()
+        fn()
+        times.append((time.perf_counter() - t) * 1000)
+    return statistics.median(times)
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--sizes", default="1000,10000,100000")
     p.add_argument("--repeat", type=int, default=5)
+    p.add_argument("--scan-max", type=int, default=100000, help="skip the scan above this size")
     a = p.parse_args()
     rng = random.Random(11)
-    print(f"  {'entries':>9}  {'file MB':>8}  " + "  ".join(f"{q:>14}" for q in QUERIES) + "   (median ms per recall)")
+    q = QUERIES["a question"]
+    print(f"  {'entries':>9}  {'log MB':>7}  {'scan ms':>8}  {'build s':>8}  {'index MB':>8}  "
+          f"{'recall ms':>9}  {'append+recall ms':>16}  same")
     for n in (int(x) for x in a.sizes.split(",")):
         owner = f"scale.n{n}"
         fill(owner, n, rng)
         mb = bb.store_file(owner).stat().st_size / 1e6
-        cells = []
-        for q in QUERIES.values():
-            times = []
-            for _ in range(a.repeat):
-                t = time.perf_counter()
-                bb.recall(owner, owner, q)
-                times.append((time.perf_counter() - t) * 1000)
-            cells.append(f"{statistics.median(times):>14.0f}")
-        print(f"  {n:>9}  {mb:>8.1f}  " + "  ".join(cells), flush=True)
+        scan = ms(lambda: bb.recall_scan(owner, owner, q), a.repeat) if n <= a.scan_max else float("nan")
+        t = time.perf_counter()
+        bb.index_refresh(owner).close()
+        build = time.perf_counter() - t
+        imb = sum(f.stat().st_size for f in (TMP / "index").glob(f"{owner}-*")) / 1e6
+        warm = statistics.median(ms(lambda: bb.index_recall(owner, owner, x), a.repeat) for x in QUERIES.values())
+
+        def append_then_recall():
+            with bb.store_file(owner).open("a") as f:
+                f.write(json.dumps(bb.make_entry(owner, "fact", "partner bank pricing appended", "t", records=[])) + "\n")
+            bb.index_recall(owner, owner, q)
+        app = ms(append_then_recall, a.repeat)
+        same = None if n > a.scan_max else all(
+            [e["id"] for e in bb.recall_scan(owner, owner, x)] == [e["id"] for e in bb.index_recall(owner, owner, x)]
+            for x in QUERIES.values())
+        print(f"  {n:>9}  {mb:>7.1f}  {scan:>8.0f}  {build:>8.1f}  {imb:>8.1f}  {warm:>9.0f}  {app:>16.0f}  "
+              f"{'not checked' if same is None else 'yes' if same else 'NO'}", flush=True)
         bb.store_file(owner).unlink()
 
 
