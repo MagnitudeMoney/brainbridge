@@ -20,6 +20,14 @@ Two stages:
 What "no dreamer" means here: nothing summarises or reorganises memory
 between sessions. Entries are the raw turns, kept as saved.
 
+--agent-prefs (run 3) adds what BrainBridge asks an agent to do while it
+works: when the user says what they like or how they want things, save a
+preference in words a later search would use. A model reads each session's
+user turns and writes those preferences, one session at a time, nothing
+across sessions. Preferences are long-term, so they load in every session's
+index (the wake), and the answer stage sees them all. Cost: one model call
+per question (batched over its sessions); --cache keeps them for reruns.
+
 Data: longmemeval_s_cleaned.json from huggingface.co/datasets/xiaowu0162/
 longmemeval-cleaned (277 MB). Pass its path; it is never copied into a repo.
 
@@ -69,10 +77,57 @@ def owner_for(qid: str) -> str:
     return "lme.q" + re.sub(r"[^a-z0-9]", "", qid.lower())
 
 
+AGENT_PREFS = False
+CACHE: Path | None = None
+MODEL = "claude-sonnet-5-5"
+
+PREFS_PROMPT = """You are an AI assistant whose memory is BrainBridge. Below are the user's own turns from \
+past conversations, session by session. For each session, write down every preference the user expressed \
+about themselves: what they like or dislike, the tools, brands, places and styles they use or choose, their \
+habits, and how they want answers. Write each one as its own short sentence in plain words a later search \
+would use: name the general kind of thing as well as the specific one (for example "Prefers Sichuan food: \
+likes spicy Chinese cooking"). Use only what that session says. If a session states no preference, skip it.
+
+Reply with JSON only: a list of {{"session": "<session id>", "text": "<preference>"}}.
+
+{sessions}"""
+
+
+def agent_preferences(q: dict) -> list[dict]:
+    """The preferences an agent following BrainBridge's guidance would have saved, session by session."""
+    cache = json.loads(CACHE.read_text()) if CACHE and CACHE.exists() else {}
+    if q["question_id"] in cache:
+        return cache[q["question_id"]]
+    parts = []
+    for sid, date, session in zip(q["haystack_session_ids"], q["haystack_dates"], q["haystack_sessions"]):
+        said = "\n".join("- " + t["content"][:1500].replace("\n", " ") for t in session if t["role"] == "user")
+        if said:
+            parts.append(f"## session {sid} ({date})\n{said}")
+    raw = ask(PREFS_PROMPT.format(sessions="\n\n".join(parts)), MODEL)
+    m = re.search(r"\[.*\]", raw, re.S)
+    prefs = [p for p in (json.loads(m.group(0)) if m else []) if p.get("text") and p.get("session")]
+    if CACHE:
+        cache = json.loads(CACHE.read_text()) if CACHE.exists() else {}
+        cache[q["question_id"]] = prefs
+        CACHE.write_text(json.dumps(cache, indent=1))
+    return prefs
+
+
 def ingest(q: dict) -> tuple[str, int]:
-    """Save every turn as an entry. Returns the owner and how many turns were refused."""
+    """Save every turn as an entry (and, with --agent-prefs, the agent's preferences).
+    Returns the owner and how many turns were refused."""
     owner = owner_for(q["question_id"])
     refused, rows = 0, []
+    if AGENT_PREFS:
+        dates = dict(zip(q["haystack_session_ids"], q["haystack_dates"]))
+        for p in agent_preferences(q):
+            try:
+                e = bb.make_entry(owner, "preference", p["text"],
+                                  f"agent, from session {p['session']}, {dates.get(p['session'], '')}", records=[])
+            except bb.BridgeError:
+                continue
+            e["_session"] = p["session"]
+            rows.append(json.dumps(e))
     for sid, date, session in zip(q["haystack_session_ids"], q["haystack_dates"], q["haystack_sessions"]):
         for i, turn in enumerate(session):
             try:
@@ -140,6 +195,8 @@ def cmd_retrieval(data: list[dict], out: Path | None) -> None:
             **{f"all@{k}": gold <= set(sess[:k]) for k in ks},
             "strict_hit": bool(gold & {e["_session"] for e in strict}), "strict_n": len(strict),
             "chance@10": bool(gold & set(random.Random(q["question_id"]).sample(every, min(10, len(every))))),
+            "woke": bool(gold & {json.loads(l)["_session"] for l in bb.store_file(owner).read_text().splitlines()
+                                 if l and json.loads(l)["kind"] == "preference"}),
         })
         bb.store_file(owner).unlink()
         if j % 50 == 0:
@@ -167,6 +224,9 @@ def report(rows: list[dict], ks) -> None:
     print("  one-recall: a single recall with every content word (how BrainBridge's recall reads a query today).")
     print("  chance@10: ten turns picked at random, the floor any memory should beat.")
     print(f"  turns refused as secrets: {sum(r['refused'] for r in rows)}")
+    if AGENT_PREFS:
+        print(f"  wake: a saved preference from an evidence session loads every session for "
+              f"{100 * sum(r['woke'] for r in rows) / len(rows):.1f}% of questions")
 
 
 # ── qa: answer and judge, through headless claude ───────────────────────────
@@ -199,6 +259,10 @@ def cmd_qa(data: list[dict], model: str, top: int, out: Path | None) -> None:
         hits = retrieve(owner, q["question"])[:top]
         hits.sort(key=lambda e: e["source"].rsplit(", ", 1)[-1])     # oldest first, by session date
         mem = "\n\n".join(f"[{e['source']}]\n{e['text'][:2000]}" for e in hits)
+        woke = [e for e in bb.live(bb.load(owner)) if e["kind"] == "preference"]
+        if woke:                    # long-term: in every session's index, whatever was searched
+            mem = ("Preferences (loaded every session):\n" + "\n".join(f"- {e['text']} [{e['source']}]" for e in woke)
+                   + "\n\nRecalled for this question:\n\n" + mem)
         answer = ask(f"Memories recalled from BrainBridge:\n\n{mem}\n\nToday is {q['question_date']}.\n"
                      f"Question: {q['question']}\nAnswer briefly. If the memories don't say, say so.", model)
         kind = "abstention" if q["question_id"].endswith("_abs") else q["question_type"]
@@ -225,8 +289,14 @@ def main() -> None:
     p.add_argument("--model", default="claude-sonnet-5-5")
     p.add_argument("--top", type=int, default=30, help="entries handed to the model in qa")
     p.add_argument("--out", type=Path)
+    p.add_argument("--type", choices=QTYPES, help="only questions of this type")
+    p.add_argument("--agent-prefs", action="store_true", help="the agent saves preferences as it works (run 3)")
+    p.add_argument("--cache", type=Path, help="keep the agent's preferences here, for reruns")
     a = p.parse_args()
-    data = sample(json.loads(a.data.read_text()), a.sample)
+    global AGENT_PREFS, CACHE, MODEL
+    AGENT_PREFS, CACHE, MODEL = a.agent_prefs, a.cache, a.model
+    data = json.loads(a.data.read_text())
+    data = sample([q for q in data if not a.type or q["question_type"] == a.type], a.sample)
     if a.stage == "retrieval":
         cmd_retrieval(data, a.out)
     else:
