@@ -126,7 +126,7 @@ First public spec, released with brainbridge.sh.
 
 ### v0.1 · 2026-11-11, later the same day
 
-- TricorderTelemetry renamed TallyTelemetry. The behaviour is unchanged.
+- Telemetry named TallyTelemetry. The behaviour is unchanged.
 
 ### v0.1 · 2026-11-11, evening
 
