@@ -1,0 +1,17 @@
+name: Idea
+description: Suggest something for BrainBridge. Others vote with a thumbs-up, and the most-wanted ideas show on brainbridge.sh's roadmap.
+title: "Idea: "
+labels: ["idea"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What should BrainBridge do, and what would it let you do that you can't today?
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+      description: Optional. How you work around it now helps us judge it.
