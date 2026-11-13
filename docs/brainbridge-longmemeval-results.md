@@ -5,6 +5,21 @@ How well does BrainBridge remember without a dreamer? We measured it on [LongMem
 - Code: [`benchmarks/brainbridge-longmemeval.py`](../benchmarks/brainbridge-longmemeval.py)
 - Data: LongMemEval-S, `longmemeval_s_cleaned.json` (277 MB, Hugging Face `xiaowu0162/longmemeval-cleaned`). 500 questions, each hidden in about 490 turns of past conversation.
 
+## Speed: recall as a brain grows
+
+Measured 2026-11-12 on a MacBook Air (Apple M-series, 16 GB) with `benchmarks/brainbridge-recall-scale.py`. A throwaway brain is filled with N entries of 8 to 30 words each, then `recall()` is timed for three queries: one word, three words and a whole question. The table shows the median.
+
+| entries | file | one word | three words | a question | peak memory |
+|---|---|---|---|---|---|
+| 1,000 | 0.4 MB | 11 ms | 12 ms | 12 ms | |
+| 10,000 | 3.9 MB | 120 ms | 124 ms | 125 ms | |
+| 100,000 | 40 MB | 1.27 s | 1.27 s | 1.30 s | |
+| 1,000,000 | 397 MB | 16.7 s | 17.3 s | 16.3 s | 5.8 GB |
+
+- Time grows in a straight line with the number of entries, and hardly at all with the length of the query.
+- Recall reads and parses the whole brain on every call. That's fine to tens of thousands of entries. At a million it's too slow, and it needs nearly 6 GB of memory.
+- The answer is an index, so that a search reads only the entries that can match. That's next.
+
 ## Runs
 
 | run | when | what changed | evidence in top 10 | one search finds it | answered |
