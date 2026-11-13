@@ -1782,15 +1782,45 @@ def brief(owner: str, reader: str | None = None, shared_only: bool = False, full
     return "\n".join(out)
 
 
-def recall(owner: str, reader: str, query: str, history: bool = False) -> list[dict]:
-    """Every word of the query, in any order, across title, text and source."""
+# Words too common to tell entries apart. A query made only of these keeps them.
+RECALL_SKIP = frozenset("""a an and are as at be been but by can could did do does for from had has have
+how i if in into is it its me my of on or our so than that the their them then there these they this to
+was we were what when where which who whom why will with would you your about all any just""".split())
+PARTIAL_MAX = 20          # partial matches returned after the full ones
+
+
+def recall(owner: str, reader: str, query: str, history: bool = False,
+           strict: bool = False) -> list[dict]:
+    """Entries holding every word of the query, in any order, across title, text
+    and source, oldest first, as before. Then, unless strict, the best partial
+    matches: entries holding at least half the words, most words first, newest
+    first on ties, at most PARTIAL_MAX. Each partial match carries "matched":
+    [words found, words asked]. LongMemEval, 2026-11-12: a single all-words
+    recall found the evidence for 18.7% of questions; ranking by words matched
+    found it in the top 10 for 93.8% (docs/brainbridge-longmemeval-results.md)."""
     require(reader, owner, "read")
     recs = load(owner)
     pool = [r for r in recs if not r.get("amends") and not r.get("retires")] if history else live(recs)
     pool = visible(pool, reader, owner)
-    words = query.lower().split()
-    hay = lambda e: " ".join(str(e.get(k, "")) for k in ("title", "hook", "text", "source", "kind", "name")).lower()
-    return padlock_annotate(owner, [e for e in pool if all(w in hay(e) for w in words)])
+    raw = [w.strip(".,;:!?\"'()[]") for w in query.lower().split()]
+    raw = [w for w in raw if w]
+    words = list(dict.fromkeys([w for w in raw if w not in RECALL_SKIP] or raw))
+    # The name ends in six hex characters of the random id; leave them out, or a
+    # word like "cafe" or "bed" matches by chance (the LongMemEval runs varied by it).
+    hay = lambda e: " ".join([*(str(e.get(k, "")) for k in ("title", "hook", "text", "source", "kind")),
+                              re.sub(r"-[0-9a-f]{6}$", "", str(e.get("name", "")))]).lower()
+    full, partial = [], []
+    for n, e in enumerate(pool):
+        h = hay(e)
+        k = sum(w in h for w in words)
+        if k == len(words):
+            full.append(e)
+        elif not strict and len(words) > 1 and k * 2 >= len(words) and k:
+            partial.append((k, n, e))
+    partial.sort(key=lambda t: (-t[0], -t[1]))
+    for k, _, e in partial[:PARTIAL_MAX]:
+        e["matched"] = [k, len(words)]
+    return padlock_annotate(owner, full + [e for _, _, e in partial[:PARTIAL_MAX]])
 
 
 def doctor(owner: str, memdir: Path | None) -> list[str]:
@@ -2029,6 +2059,32 @@ def padlock_verify(owner: str) -> tuple[list[str], int]:
     if any(s.startswith("unverified") for s in own.values()):
         lines.append("ssh-keygen is not on PATH here, so signed records could not be checked")
     return lines, len(bad)
+
+
+def recall_selftest(ok) -> None:
+    """Called by selftest() once its temporary store is up."""
+    o = "recall.owner"
+    for text in ("The team prefers green for buttons", "Green tea at the offsite",
+                 "Buttons get rounded corners", "Nothing about colour here"):
+        save(o, o, "fact", text, "test", push=False)
+    full = recall(o, o, "green buttons", strict=True)
+    ok("recall --strict: only entries holding every word", [e["text"] for e in full]
+       == ["The team prefers green for buttons"])
+    hits = recall(o, o, "green buttons")
+    ok("recall: full matches first, then partial ones, each marked",
+       hits[0]["text"] == "The team prefers green for buttons" and "matched" not in hits[0]
+       and {e["text"] for e in hits[1:]} == {"Green tea at the offsite", "Buttons get rounded corners"}
+       and all(e["matched"] == [1, 2] for e in hits[1:]))
+    ok("recall: partial ties go newest first", hits[1]["text"] == "Buttons get rounded corners")
+    ok("recall: a match below half the words is left out",
+       "Nothing about colour here" not in [e["text"] for e in recall(o, o, "green buttons offsite colour")]
+       and "Nothing about colour here" not in [e["text"] for e in recall(o, o, "green buttons offsite")]
+       and "Buttons get rounded corners" not in [e["text"] for e in recall(o, o, "green tea offsite")])
+    ok("recall: common words don't count", [e["text"] for e in recall(o, o, "what are the buttons")]
+       == ["The team prefers green for buttons", "Buttons get rounded corners"])
+    ok("recall: an empty query still lists every entry", len(recall(o, o, "")) == 4)
+    stray = next(e for e in live(load(o)) if e["text"] == "Nothing about colour here")["id"][:6]
+    ok("recall: the random id inside a name never matches", not recall(o, o, stray, strict=True))
 
 
 def padlock_selftest(ok, raises) -> None:
@@ -2477,6 +2533,7 @@ def selftest() -> int:
            and u.get("feedback", (0, 0))[1] >= 1)
         padlock_selftest(ok, raises)                                   # PadLock v0.1
         selftest_meld_beam(ok, raises, t)                   # MindMeld and TransporterBeam
+        recall_selftest(ok)                                 # recall ranks partial matches
         # A deleted data worktree is rebuilt, and reads are current again.
         import shutil as _sh
         _sh.rmtree(WORKTREE)
@@ -3123,6 +3180,7 @@ def main() -> int:
     o = sub.add_parser("open", help="teleport: read another owner's brain"); o.add_argument("brain")
     q = sub.add_parser("recall"); q.add_argument("query", nargs="?", default="")
     q.add_argument("--history", action="store_true", help="include superseded entries")
+    q.add_argument("--strict", action="store_true", help="only entries holding every word")
     g = sub.add_parser("grant", help="let another handle read or write your brain")
     g.add_argument("grantee"); g.add_argument("--scope", choices=SCOPES, default="read")
     g.add_argument("--days", type=int); g.add_argument("--source", required=True)
@@ -3275,8 +3333,12 @@ def main() -> int:
     elif a.cmd == "open":
         print(brief(check_handle(a.brain), reader))
     elif a.cmd == "recall":
-        for e in recall(owner, reader, a.query, a.history):
-            print(f"  [{e['id'][:6]}] {e['kind']:10} {e['text']}\n{'':21}— {e['source']}{padlock_tag(e)}")
+        hits = recall(owner, reader, a.query, a.history, a.strict)
+        for i, e in enumerate(hits):
+            if e.get("matched") and not (i and hits[i - 1].get("matched")):
+                print("  partial matches, most words first:")
+            part = f" (matched {e['matched'][0]} of {e['matched'][1]} words)" if e.get("matched") else ""
+            print(f"  [{e['id'][:6]}] {e['kind']:10} {e['text']}\n{'':21}— {e['source']}{padlock_tag(e)}{part}")
         telemetry_event("recalled", client="cli")
     elif a.cmd == "grant":
         kw = {"kinds": a.kinds.split(",") if a.kinds else None, "match": a.match,
