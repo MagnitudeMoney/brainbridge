@@ -104,7 +104,8 @@ who owns what, open threads. Not code structure, not git history, not a
 transcript. If a repository doc already says it, point there instead.
 
 CONFIGURATION (all optional):
-  BRAINBRIDGE_AS          who this agent is (a handle)
+  BRAINBRIDGE_AS          who this agent is (a handle); else the one
+                          `brainbridge setup` saved in ~/.config/brainbridge/config.json
   BRAINBRIDGE_STORE_REPO  the brains' git repository   (~/.brainbridge/store)
   BRAINBRIDGE_WORKTREE    the data worktree saves use  (~/.brainbridge/worktree)
   BRAINBRIDGE_ROOT        a handle that can open every brain (default: none)
@@ -137,6 +138,9 @@ from pathlib import Path
 # may sit in a public repository that brains must never ride along into. REPO is
 # the BRAINS' repository, not this file's.
 BB_HOME = Path.home() / ".brainbridge"
+# WHO YOU ARE, saved by `brainbridge setup` so no shell has to export it.
+# BRAINBRIDGE_AS, when set, still wins.
+CONFIG_FILE = Path.home() / ".config" / "brainbridge" / "config.json"
 REPO = Path(os.environ.get("BRAINBRIDGE_STORE_REPO") or BB_HOME / "store")
 STORE_REL = Path("docs") / "brainbridge"
 WORKTREE = Path(os.environ.get("BRAINBRIDGE_WORKTREE") or BB_HOME / "worktree")
@@ -454,6 +458,15 @@ def home_checkout_repo(cwd: Path | None = None) -> str | None:
     return top.name if top.parent == CODE_ROOT.resolve() else None
 
 
+def configured_handle() -> str | None:
+    """The handle `brainbridge setup` saved, if any."""
+    try:
+        h = json.loads(CONFIG_FILE.read_text()).get("as", "")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return h if HANDLE.fullmatch(h or "") else None
+
+
 def acting_handle() -> str | None:
     """Who this session is, as the caller declared it: BRAINBRIDGE_AS, a handle
     or a repository name the registry maps to one. Never a worktree's cwd: an
@@ -462,6 +475,8 @@ def acting_handle() -> str | None:
     keys the memory folder to that directory, which is why a brain loads by
     handle instead."""
     raw = (os.environ.get("BRAINBRIDGE_AS") or "").strip().lstrip("@")
+    if not raw:
+        raw = configured_handle() or ""
     if not raw:
         raw = home_checkout_repo() or ""
     if not raw:
@@ -2534,6 +2549,7 @@ def selftest() -> int:
         padlock_selftest(ok, raises)                                   # PadLock v0.1
         selftest_meld_beam(ok, raises, t)                   # MindMeld and TransporterBeam
         recall_selftest(ok)                                 # recall ranks partial matches
+        setup_selftest(ok)                                  # brainbridge setup
         # A deleted data worktree is rebuilt, and reads are current again.
         import shutil as _sh
         _sh.rmtree(WORKTREE)
@@ -2788,6 +2804,180 @@ def install_command(dirs: tuple[Path, ...] | None = None) -> str:
             shim.chmod(0o755)
             return f"installed {shim}"
     raise BridgeError("no writable directory on PATH; add ~/.local/bin to PATH and run this again")
+
+
+# ── setup: one command from a fresh clone to a working brain ────────────────
+
+SETUP_CLIENTS = {        # how setup spots each agent app: its command, or its settings folder
+    "claude": ("claude", ".claude"), "codex": ("codex", ".codex"),
+    "gemini": ("gemini", ".gemini"), "cursor": ("cursor", ".cursor"),
+}
+
+
+def setup_checks() -> list[tuple[str, bool, str]]:
+    """(what, ok, a plain fix). Python and git are required; ssh-keygen only for PadLock."""
+    import shutil
+    out = [("Python 3.9 or later", sys.version_info >= (3, 9),
+            f"this is Python {platform.python_version()}: install a newer python3")]
+    out.append(("git", bool(shutil.which("git")), "install git (macOS: xcode-select --install)"))
+    ssh = ""
+    if shutil.which("ssh"):
+        r = subprocess.run(["ssh", "-V"], capture_output=True, text=True)
+        ssh = r.stderr + r.stdout
+    m = re.search(r"OpenSSH_(\d+)\.(\d+)", ssh)
+    out.append(("OpenSSH 8.1 or later, for PadLock signatures",
+                bool(shutil.which("ssh-keygen")) and bool(m) and (int(m[1]), int(m[2])) >= (8, 1),
+                "install OpenSSH 8.1+; until then entries are saved unsigned"))
+    return out
+
+
+def setup_detect(home: Path | None = None) -> list[str]:
+    """Agent apps on this machine, by command on PATH or settings folder in home."""
+    import shutil
+    home = home or Path.home()
+    return [c for c, (cmd, folder) in SETUP_CLIENTS.items() if shutil.which(cmd) or (home / folder).is_dir()]
+
+
+def save_configured_handle(handle: str) -> str:
+    check_handle(handle)
+    try:
+        conf = json.loads(CONFIG_FILE.read_text())
+    except (OSError, ValueError):
+        conf = {}
+    if conf.get("as") == handle:
+        return f"already saved: you are {handle} ({CONFIG_FILE})"
+    conf["as"] = handle
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(conf, indent=2) + "\n")
+    return f"saved: you are {handle} ({CONFIG_FILE}); every shell and app reads it"
+
+
+def setup(handle: str | None = None, yes: bool = False, interactive: bool | None = None,
+          clients: list[str] | None = None, install: bool = True, push: bool = True,
+          say=print) -> int:
+    """From a fresh clone to a working brain, one step at a time. Safe to run
+    again: a step already done says so and moves on. Shows what it will write
+    before writing anything outside BrainBridge's own folders."""
+    interactive = sys.stdin.isatty() if interactive is None else interactive
+
+    def ask(q: str, default: str = "") -> str:
+        if not interactive:
+            return default
+        got = input(f"  {q}{f' [{default}]' if default else ''}: ").strip()
+        return got or default
+
+    say("BrainBridge setup\n")
+    say("1. Checks")
+    need = 0
+    for what, good, fix in setup_checks():
+        say(f"   {'ok  ' if good else 'MISS'} {what}" + ("" if good else f": {fix}"))
+        need += (not good) and not what.startswith("OpenSSH")
+    if need:
+        say("\n   Fix the line(s) above, then run `brainbridge setup` again.")
+        return 1
+
+    say("\n2. Who you are")
+    have = handle or os.environ.get("BRAINBRIDGE_AS") or configured_handle()
+    while True:
+        h = (have or ask("Pick a handle: lowercase words joined by dots, such as maria.agent")).strip().lstrip("@")
+        if h and HANDLE.fullmatch(h):
+            break
+        if not interactive:
+            say("   a handle is needed: run `brainbridge setup --handle your.name`")
+            return 1
+        say("   a handle is lowercase words joined by dots, such as maria.agent")
+        have = None
+    say(f"   {save_configured_handle(h)}")
+
+    if install:
+        say("\n3. The `brainbridge` command")
+        try:
+            say(f"   {install_command()}")
+        except BridgeError as err:
+            say(f"   not installed: {err}")
+
+    say("\n4. Your signing key (PadLock)")
+    try:
+        say("   " + padlock_init(h, push=push).replace("\n", "\n   "))
+    except BridgeError as err:
+        say(f"   skipped: {err}. Entries are saved unsigned until `brainbridge init` works")
+
+    say("\n5. Your first memory")
+    if any(e.get("source", "").startswith("brainbridge setup") for e in live(load(h))):
+        say("   already there")
+    else:
+        e, st = save(h, h, "fact", "BrainBridge was set up on this machine", f"brainbridge setup, {now().date()}",
+                     push)
+        say(f"   saved [{e['id'][:6]}] {e['text']} ({st})")
+    found = recall(h, h, "brainbridge set up", strict=True)
+    say(f"   recall finds it: {'yes' if found else 'NO (run `brainbridge doctor`)'}")
+
+    say("\n6. Your agent apps")
+    apps = setup_detect() if clients is None else clients
+    if not apps:
+        say("   none found (Claude Code, Codex, Gemini CLI, Cursor). Later: `brainbridge connect <app> --yes`,\n"
+            "   or `brainbridge connect --print` for any other MCP client")
+    for c in apps:
+        plan = connect(c, h)
+        if plan.startswith(f"{c}: already"):
+            say(f"   {plan}")
+            continue
+        say("   " + plan.replace("\n", "\n   "))
+        if yes or ask(f"Connect {c}? yes or no", "no").lower() in ("y", "yes"):
+            say("   " + connect(c, h, yes=True).replace("\n", "\n   "))
+        else:
+            say(f"   left alone. Later: brainbridge connect {c} --yes")
+
+    say("\n7. TallyTelemetry")
+    if not interactive:
+        say("   left as it is. Only a person at a terminal can turn it on: brainbridge telemetry on")
+    elif telemetry_conf().get("on"):
+        say("   already on. `brainbridge telemetry off` turns it off")
+    else:
+        say("   Off unless you say yes. When on, BrainBridge counts what your agents do (never what\n"
+            "   they remember) in a file on this machine, and `brainbridge report` reads it back.")
+        if ask("Count on this machine? Type yes, or press Enter to leave it off", "").lower() == "yes":
+            say(f"   {telemetry_set(True)}")
+        else:
+            say("   left off")
+
+    say(f"\nDone. You are {h}. Try:\n"
+        f"   brainbridge save --kind decision --source \"you, {now().date()}\" \"what you decided\"\n"
+        "   brainbridge recall decided\n"
+        "   brainbridge wake")
+    return 0
+
+
+def setup_selftest(ok) -> None:
+    """Called by selftest() with its temporary store in place."""
+    global CONFIG_FILE, KEYS_DIR
+    import tempfile
+    saved_conf, saved_keys, saved_env = CONFIG_FILE, KEYS_DIR, os.environ.pop("BRAINBRIDGE_AS", None)
+    tmp = Path(tempfile.mkdtemp())
+    CONFIG_FILE, KEYS_DIR = tmp / "config.json", tmp / "keys"     # never the real config or keys
+    try:
+        lines: list[str] = []
+        rc = setup("setup.test", interactive=False, clients=[], install=False, push=False, say=lines.append)
+        text = "\n".join(lines)
+        ok("setup: runs from nothing to a saved, recalled first memory", rc == 0
+           and "recall finds it: yes" in text and "saved: you are setup.test" in text)
+        ok("setup: the handle is saved, and read when BRAINBRIDGE_AS is unset",
+           configured_handle() == "setup.test" and acting_handle() == "setup.test")
+        again: list[str] = []
+        setup(interactive=False, clients=[], install=False, push=False, say=again.append)
+        joined = "\n".join(again)
+        ok("setup: a second run finds every step done and saves nothing twice",
+           "already saved" in joined and "already there" in joined
+           and sum(e["text"] == "BrainBridge was set up on this machine" for e in live(load("setup.test"))) == 1)
+        ok("setup: an agent's run leaves telemetry alone", "Only a person at a terminal" in joined)
+        bad: list[str] = []
+        ok("setup: no handle and no person to ask stops with the fix",
+           (CONFIG_FILE.unlink() or True) and setup(interactive=False, clients=[], install=False, push=False,
+                                                     say=bad.append) == 1 and "--handle" in "\n".join(bad))
+    finally:
+        CONFIG_FILE, KEYS_DIR = saved_conf, saved_keys
+        if saved_env is not None:
+            os.environ["BRAINBRIDGE_AS"] = saved_env
 
 
 def hook() -> int:
@@ -3231,6 +3421,11 @@ def main() -> int:
     k.add_argument("--yes", action="store_true", help="write it; without this, only show what it would write")
     sub.add_parser("install-autoload", help="add both hooks to ~/.claude/settings.json and `brainbridge` to PATH, once")
     sub.add_parser("install-command", help="put a `brainbridge` command on PATH")
+    su = sub.add_parser("setup", help="from a fresh clone to a working brain: checks, handle, command, key, "
+                                      "first memory, agent apps, telemetry. Safe to run again")
+    su.add_argument("--handle", help="your handle, such as maria.agent (asked for when not given)")
+    su.add_argument("--yes", action="store_true", help="connect every agent app found without asking")
+    su.add_argument("--no-connect", action="store_true", help="leave agent apps alone")
     f = sub.add_parser("feedback", help="tell BrainBridge's steward what failed or worked; --list to read them")
     f.add_argument("text", nargs="?", default="")
     fs = f.add_mutually_exclusive_group()
@@ -3262,6 +3457,8 @@ def main() -> int:
     if a.cmd == "install-command":
         print(f"  {install_command()}")
         return 0
+    if a.cmd == "setup":
+        return setup(a.handle, yes=a.yes, clients=[] if a.no_connect else None, push=not a.no_push)
     if a.cmd == "prime-directive":
         print("  PrimeDirective\n" + prime_directive())
         return 0
