@@ -188,7 +188,8 @@ def call(name: str, args: dict) -> str:
         hits = bb.recall(bb.check_handle(args["brain"]), who, args.get("query", ""), bool(args.get("history")),
                          bool(args.get("strict")))
         bb.telemetry_event("recalled", client=CLIENT)
-        return "\n".join(f"[{e['id'][:6]}] {e['kind']} ({'faded' if bb.faded(e) else bb.term(e) + '-term'}): "
+        act = bb.active_days(bb.live_entries(bb.check_handle(args["brain"])))
+        return "\n".join(f"[{e['id'][:6]}] {e['kind']} ({'faded' if bb.faded(e, active=act) else bb.term(e) + '-term'}): "
                          f"{e['text']}\n    source: {e['source']}"
                          + (f" (by @{e['by']})" if e.get("by") else "")
                          + (f" (via {e['via']})" if e.get("via") else "")

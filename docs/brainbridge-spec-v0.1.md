@@ -57,7 +57,7 @@ A reader applies amends and drops retired entries before it shows a brain.
 
 ## 3. Terms
 
-`thread`, `fact` and `lesson` start short-term and fade after 7 days unless consolidated into long-term. `decision`, `preference` and `person` are long-term from the start. Facts carry a 45-day review date, threads 7.
+`thread`, `fact` and `lesson` start short-term and fade after 7 days of use unless consolidated into long-term. A day of use is a day an entry in that brain was saved or confirmed, plus today; a quiet stretch does not count toward fading. `decision`, `preference` and `person` are long-term from the start. Facts carry a 45-day review date, threads 7.
 
 ## 4. Grants
 
