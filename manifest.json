@@ -1,0 +1,112 @@
+{
+  "manifest_version": "0.3",
+  "name": "brainbridge",
+  "display_name": "BrainBridge",
+  "version": "0.1.4",
+  "description": "Memory any agent can keep and share: every entry says what was decided, who decided it, and the source.",
+  "long_description": "BrainBridge is an open memory format and reference server. Each agent keeps a brain: append-only, signed entries, each with its source and date, stored as plain JSON Lines in git on your own machine. Recall searches a local index beside the log; the log stays the only truth. Agents from different AI companies can share one brain, with grants you control. Nothing is sent anywhere unless you turn on TallyTelemetry, which is off by default.",
+  "author": {
+    "name": "Magnitude Inc.",
+    "url": "https://brainbridge.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MagnitudeMoney/brainbridge.git"
+  },
+  "homepage": "https://brainbridge.sh",
+  "documentation": "https://github.com/MagnitudeMoney/brainbridge#readme",
+  "support": "https://github.com/MagnitudeMoney/brainbridge/issues",
+  "server": {
+    "type": "python",
+    "entry_point": "brainbridge-mcp.py",
+    "mcp_config": {
+      "command": "python3",
+      "args": [
+        "${__dirname}/brainbridge-mcp.py"
+      ],
+      "env": {
+        "BRAINBRIDGE_AS": "${user_config.handle}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "brain_list",
+      "description": "List the brains you can open, and every grant that involves you."
+    },
+    {
+      "name": "brain_open",
+      "description": "Teleport into a brain: short-term memory in full, long-term memory as a one-line index (brain_recall brings back the full text), and anything due for review first."
+    },
+    {
+      "name": "brain_recall",
+      "description": "Search a brain."
+    },
+    {
+      "name": "brain_save",
+      "description": "Remember something: committed to git, pushed, and mirrored into the owner's memory folder."
+    },
+    {
+      "name": "brain_consolidate",
+      "description": "Move a short-term memory into long-term, faded or not, so it is kept."
+    },
+    {
+      "name": "brain_grant",
+      "description": "Let another handle open your brain (read), or also write to it (append)."
+    },
+    {
+      "name": "brain_revoke",
+      "description": "Take back a grant you made (the root handle, if one is set, can revoke any)."
+    },
+    {
+      "name": "brain_retire",
+      "description": "Stop an entry loading, saying why."
+    },
+    {
+      "name": "brain_mindmeld",
+      "description": "MindMeld: share chosen memories with another agent, both consenting."
+    },
+    {
+      "name": "brain_prime_directive",
+      "description": "The PrimeDirective in full: the rules every brain keeps."
+    },
+    {
+      "name": "brain_feedback",
+      "description": "Say in one line what failed, what worked, or what you need from BrainBridge."
+    },
+    {
+      "name": "brain_telemetry",
+      "description": "Show what TallyTelemetry records and whether it is on."
+    },
+    {
+      "name": "brain_report",
+      "description": "After opt-in: the person's own agents' decision-making as eight funnel tiles, read from this machine's TallyTelemetry log only."
+    }
+  ],
+  "keywords": [
+    "memory",
+    "agents",
+    "provenance",
+    "mcp",
+    "open-source"
+  ],
+  "license": "Apache-2.0",
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "linux"
+    ],
+    "runtimes": {
+      "python": ">=3.9"
+    }
+  },
+  "user_config": {
+    "handle": {
+      "type": "string",
+      "title": "Your handle",
+      "description": "Lowercase words joined by dots, such as maria.agent. Leave empty to use the one `brainbridge setup` saved.",
+      "required": false,
+      "default": ""
+    }
+  }
+}
